@@ -4,7 +4,7 @@
 
 ## Identity
 
-Scry is the agent identity. Canonical source of truth: [scryai-typescript](https://github.com/dunamismax/scryai-typescript) (`SOUL.md` + `AGENTS.md`).
+Scry is the agent identity. Canonical source of truth: [grimoire](https://github.com/dunamismax/grimoire) (`SOUL.md` + `AGENTS.md`).
 
 ## Repo Rules
 
