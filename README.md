@@ -1,71 +1,67 @@
-# Oracle
+# scryfall-discord-bot
 
-Discord bot for fast Magic: The Gathering card lookups powered by the [Scryfall API](https://scryfall.com/docs/api). Supports prefix commands, bracket syntax, random pulls, rules lookup, and rich embeds with prices and legality.
+Discord bot for fast Magic: The Gathering card lookups using the [Scryfall API](https://scryfall.com/docs/api).
 
-## Features
+## Scope
 
-- **Card lookup** — prefix command or bracket syntax (`[[Card Name]]`)
-- **Random card** — random pulls with optional Scryfall query filters
-- **Rules lookup** — `rules <card name>` for rules text
-- **Multi-card queries** — semicolon-separated lookups in one message
-- **Rich embeds** — prices, legality, set info, and card imagery
-- **Rate limiting** — per-user cooldowns and duplicate suppression
-- **API-aware throttling** — respects Scryfall rate limits
+- Prefix lookups like `!lightning bolt`
+- Bracket lookups like `[[Lightning Bolt]]`
+- `rules <card name>` for rulings
+- `random` with optional Scryfall filters
+- Semicolon-separated multi-card lookups
+- Rich embeds with imagery, prices, legality, and set info
 
-## Prerequisites
+This repo does not ship a process manager, dashboard, or storage layer. It is a Discord bot process plus a thin local launcher.
+
+## Run It
+
+Requirements:
 
 - Python 3.12+
-- [uv](https://docs.astral.sh/uv/) package manager
-- Discord bot token with Message Content intent enabled
+- [uv](https://docs.astral.sh/uv/)
+- A Discord bot token with Message Content intent enabled
 
-## Quick Start
+Setup:
 
 ```bash
-git clone https://github.com/dunamismax/oracle.git
-cd oracle
 cp .env.example .env
 # set MTG_DISCORD_TOKEN in .env
 uv sync
-uv run python manage_bot.py start
+uv run python -m oracle
 ```
 
-## Commands
+Optional wrapper:
 
-| Command | Description |
-|---|---|
-| `uv sync` | Install dependencies |
-| `uv run python manage_bot.py start` | Start the bot |
-| `python3 manage_bot.py status` | Check bot status |
-| `python3 manage_bot.py stop` | Stop the bot |
-| `uv run ruff format .` | Auto-format code |
-| `uv run ruff check .` | Lint check |
-| `uv run mypy oracle` | Type check |
-
-## Stack
-
-- **Runtime**: Python 3.12+
-- **Discord**: [discord.py](https://discordpy.readthedocs.io/)
-- **Data**: [Scryfall API](https://scryfall.com/docs/api)
-- **HTTP**: [httpx](https://www.python-httpx.org/) (async)
-- **Tooling**: uv · Ruff · MyPy
-
-## Project Structure
-
-```
-oracle/
-  __main__.py           # Bot entrypoint
-  bot.py                # Discord command and event handling
-  scryfall.py           # Scryfall API integration
-  config.py             # Environment config and validation
-  logging.py            # Structured logging helpers
-  errors.py             # Error types and classification
-manage_bot.py           # Start/stop/status process manager
-pyproject.toml          # Dependencies and tooling config
+```bash
+uv run python manage_bot.py run
 ```
 
-## Deployment
+`manage_bot.py` only validates config and launches the bot in the foreground. If you need restarts or backgrounding, use systemd, Docker, a container platform, or another real supervisor.
 
-Run as a long-running process with your preferred supervisor (systemd, Docker, PM2, etc.). The only required secret is `MTG_DISCORD_TOKEN` via `.env` or host environment.
+## Checks
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall manage_bot.py oracle tests
+```
+
+Static checks are configured in `pyproject.toml`, but they are optional local tooling, not part of the runtime path.
+
+## Layout
+
+```text
+oracle/                # legacy module path kept to avoid risky import churn
+  __main__.py          # bot entrypoint
+  bot.py               # Discord command and event handling
+  scryfall.py          # Scryfall API integration
+  config.py            # environment loading and validation
+manage_bot.py          # thin foreground launcher
+tests/                 # stdlib unit tests for stable utility code
+```
+
+## Naming
+
+The repo identity is `scryfall-discord-bot`. The Python package/module name is still `oracle` for now. That residue is intentional to avoid a risky rename that would buy very little.
 
 ## License
 

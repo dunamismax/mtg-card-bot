@@ -1,4 +1,4 @@
-"""Configuration management for the Oracle Discord bot."""
+"""Configuration helpers for scryfall-discord-bot."""
 
 import os
 from pathlib import Path
@@ -10,17 +10,6 @@ def get_bool(key: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.lower() in ("true", "1", "yes", "on")
-
-
-def get_int(key: str, default: int = 0) -> int:
-    """Get integer environment variable with default."""
-    value = os.getenv(key)
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
 
 
 def get_float(key: str, default: float = 0.0) -> float:
@@ -39,7 +28,7 @@ def load_env_file(env_file: Path) -> None:
     if not env_file.exists():
         return
 
-    with open(env_file) as f:
+    with open(env_file, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line == "" or line.startswith("#"):
@@ -62,11 +51,10 @@ def load_env_file(env_file: Path) -> None:
 
 
 class OracleConfig:
-    """Configuration for Oracle bot."""
+    """Runtime configuration for the bot."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.discord_token = os.getenv("MTG_DISCORD_TOKEN", "")
-        self.bot_name = "Oracle"
         self.command_prefix = os.getenv("MTG_COMMAND_PREFIX", "!")
         self.log_level = os.getenv(
             "MTG_LOG_LEVEL", os.getenv("LOG_LEVEL", "info")
@@ -74,16 +62,12 @@ class OracleConfig:
         self.json_logging = get_bool(
             "MTG_JSON_LOGGING", get_bool("JSON_LOGGING", False)
         )
-        self.debug_mode = get_bool("DEBUG", False)
         self.command_cooldown = get_float("MTG_COMMAND_COOLDOWN", 2.0)
 
     def validate_config(self) -> None:
         """Validate the configuration after loading."""
         if not self.discord_token:
             raise ValueError("MTG_DISCORD_TOKEN is required")
-
-        if not self.bot_name:
-            raise ValueError("bot_name is required")
 
         valid_levels = {"debug", "info", "warn", "warning", "error"}
         if self.log_level not in valid_levels:
@@ -93,5 +77,5 @@ class OracleConfig:
 
 
 def load_config() -> OracleConfig:
-    """Load configuration for Oracle bot."""
+    """Load runtime configuration."""
     return OracleConfig()

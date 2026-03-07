@@ -1,4 +1,4 @@
-"""Simple error handling for Oracle bot."""
+"""Simple error handling for the bot."""
 
 from enum import Enum
 
@@ -17,9 +17,11 @@ class ErrorType(str, Enum):
 
 
 class OracleError(Exception):
-    """Oracle bot specific error."""
+    """Bot-specific error."""
 
-    def __init__(self, error_type: ErrorType, message: str, cause: Exception = None):
+    def __init__(
+        self, error_type: ErrorType, message: str, cause: Exception | None = None
+    ) -> None:
         self.error_type = error_type
         self.message = message
         self.cause = cause
@@ -27,7 +29,7 @@ class OracleError(Exception):
 
 
 def create_error(
-    error_type: ErrorType, message: str, cause: Exception = None
+    error_type: ErrorType, message: str, cause: Exception | None = None
 ) -> OracleError:
     """Create an OracleError with the given type and message."""
     return OracleError(error_type, message, cause)

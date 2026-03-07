@@ -1,4 +1,4 @@
-"""Main entry point for Oracle."""
+"""Main entry point for scryfall-discord-bot."""
 
 import asyncio
 import signal
@@ -10,7 +10,7 @@ from .bot import OracleBot
 
 
 async def async_main() -> None:
-    """Main function to run Oracle."""
+    """Run the Discord bot."""
     # Load environment from .env file if it exists
     env_file = Path(".env")
     if env_file.exists():
@@ -34,7 +34,7 @@ async def async_main() -> None:
     logging.initialize_logger(cfg.log_level, cfg.json_logging)
     logger = logging.with_component("main")
 
-    logger.info("Starting Oracle", version="2.0.0")
+    logger.info("Starting bot", app="scryfall-discord-bot", version="2.0.0")
 
     # Create and start the bot
     bot = OracleBot(cfg)
@@ -68,7 +68,7 @@ async def async_main() -> None:
                 pass
 
         # Clean shutdown
-        logger.info("Shutting down Oracle...")
+        logger.info("Shutting down bot")
         await bot.close()
 
         # Check if bot task failed
@@ -76,17 +76,17 @@ async def async_main() -> None:
             try:
                 bot_task.result()
             except Exception as e:
-                logger.error("Oracle bot failed", error=str(e))
+                logger.error("Bot failed", error=str(e))
                 sys.exit(1)
 
     except Exception as e:
-        logger.error("Failed to start Oracle", error=str(e))
+        logger.error("Failed to start bot", error=str(e))
         await bot.close()
         sys.exit(1)
 
 
 def main() -> None:
-    """Entry point for the Oracle console script."""
+    """Entry point for the console script."""
     asyncio.run(async_main())
 
 

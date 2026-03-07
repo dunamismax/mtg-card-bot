@@ -2,13 +2,14 @@
 
 > Code agent instructions for this repository.
 
-## Identity
+## Repo Identity
 
-Scry is the agent identity. Canonical source of truth: [grimoire](https://github.com/dunamismax/grimoire) (`SOUL.md` + `AGENTS.md`).
+This repo is `scryfall-discord-bot`.
+
+The Python package name is still `oracle`. Treat that as legacy module naming, not current branding.
 
 ## Repo Rules
 
-- No AI attribution in commits. Commit as `dunamismax`.
-- Push directly to main. Force-push when needed.
-- Dual remotes: GitHub + Codeberg.
-
+- Keep the bot runnable without adding process-management ceremony.
+- Prefer direct docs over aspirational docs.
+- Do not add branding residue that conflicts with `scryfall-discord-bot`.
