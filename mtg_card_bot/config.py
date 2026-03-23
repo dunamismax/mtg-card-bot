@@ -76,6 +76,9 @@ class MTGConfig:
         )
         self.debug_mode = get_bool("DEBUG", False)
         self.command_cooldown = get_float("MTG_COMMAND_COOLDOWN", 2.0)
+        # Optional: PostgreSQL DSN. When unset the bot runs without a database.
+        # Example: postgresql://user:password@localhost:5432/mtg_card_bot
+        self.database_url: str | None = os.getenv("MTG_DATABASE_URL") or None
 
     def validate_config(self) -> None:
         """Validate the configuration after loading."""

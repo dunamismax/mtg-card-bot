@@ -5,7 +5,7 @@ import signal
 import sys
 from pathlib import Path
 
-from . import config, logging
+from . import config, db, logging
 from .bot import MTGCardBot
 
 
@@ -35,6 +35,18 @@ async def async_main() -> None:
     logger = logging.with_component("main")
 
     logger.info("Starting MTG Card Bot", version="2.0.0")
+
+    # Initialize PostgreSQL pool if a DSN is configured
+    if cfg.database_url:
+        try:
+            await db.create_pool(cfg.database_url)
+            await db.init_schema()
+            logger.info("Database connected and schema ready")
+        except Exception as e:
+            logger.error("Failed to connect to database", error=str(e))
+            sys.exit(1)
+    else:
+        logger.info("No MTG_DATABASE_URL set -- running without persistent storage")
 
     # Create and start the bot
     bot = MTGCardBot(cfg)
@@ -70,6 +82,7 @@ async def async_main() -> None:
         # Clean shutdown
         logger.info("Shutting down MTG Card bot...")
         await bot.close()
+        await db.close_pool()
 
         # Check if bot task failed
         if bot_task in done and not bot_task.cancelled():
@@ -82,6 +95,7 @@ async def async_main() -> None:
     except Exception as e:
         logger.error("Failed to start MTG Card bot", error=str(e))
         await bot.close()
+        await db.close_pool()
         sys.exit(1)
 
 

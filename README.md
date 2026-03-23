@@ -9,6 +9,7 @@ Discord bot for lightning-fast Magic: The Gathering lookups with live prices, le
 - [uv](https://docs.astral.sh/uv/) package manager
 - Python 3.13 (installed and pinned through `uv python`)
 - Discord bot token with message content intent enabled
+- PostgreSQL 14+ (optional; required for persistent lookup history)
 
 ### Installation
 
@@ -19,11 +20,31 @@ uv python pin 3.13
 git clone https://github.com/dunamismax/mtg-card-bot.git
 cd mtg-card-bot
 
-cp .env.example .env  # add your MTG_DISCORD_TOKEN
+cp .env.example .env  # add your MTG_DISCORD_TOKEN and optionally MTG_DATABASE_URL
 uv sync
 
 uv run python manage_bot.py start   # start with live logs
 ```
+
+### PostgreSQL setup (optional)
+
+When `MTG_DATABASE_URL` is set the bot creates its schema automatically on startup.
+No migration tool is needed -- tables are created with `CREATE TABLE IF NOT EXISTS`.
+
+```bash
+createdb mtg_card_bot
+# or via psql:
+# CREATE DATABASE mtg_card_bot;
+```
+
+Then add to `.env`:
+
+```
+MTG_DATABASE_URL=postgresql://user:password@localhost:5432/mtg_card_bot
+```
+
+Without this variable the bot runs in stateless mode -- all in-memory rate limits
+and duplicate suppression work normally, but lookup history is not persisted.
 
 ## Configuration
 
@@ -36,6 +57,7 @@ Environment variables can be set in `.env`:
 | `MTG_LOG_LEVEL` | `debug`, `info`, `warning`, `error` | `info` |
 | `MTG_JSON_LOGGING` | Structured JSON logs | `false` |
 | `MTG_COMMAND_COOLDOWN` | Seconds between commands per user | `2.0` |
+| `MTG_DATABASE_URL` | PostgreSQL DSN for persistent storage | unset |
 
 ## Using the Bot
 
@@ -79,6 +101,7 @@ uv run python manage_bot.py logs
 
 - **Systemd:** run `manage_bot.py start` from a service pointing at your project directory.
 - **Docker:** base on `python:3.13-slim`, install `uv`, copy the project, `uv sync --frozen`, then run `uv run python manage_bot.py start`.
+- **Database:** supply `MTG_DATABASE_URL` pointing at a PostgreSQL 14+ instance. The bot creates its own tables on first start. No separate migration step is required.
 
 ## License
 

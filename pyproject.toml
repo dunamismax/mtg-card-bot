@@ -11,7 +11,7 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic-settings>=2.10.1",
     "structlog>=25.4.0",
-    "aiosqlite>=0.21.0",
+    "asyncpg>=0.30.0",
     "pillow>=11.3.0",
 ]
 
@@ -56,6 +56,10 @@ strict_equality = true
 
 [[tool.mypy.overrides]]
 module = "discord.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "asyncpg.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
