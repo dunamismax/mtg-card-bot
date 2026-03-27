@@ -1,96 +1,122 @@
 # MTG Card Bot
 
-Discord bot for lightning-fast Magic: The Gathering lookups with live prices, legality, rulings, and polished embeds powered by the Scryfall API.
+Discord bot for fast Magic: The Gathering card lookups with live pricing, legality, rulings, and embed-first responses powered by the Scryfall API.
+
+## What It Does
+
+- Fuzzy card lookup with bracket syntax like `[[Lightning Bolt]]`
+- Live card pricing, legality summaries, and rulings
+- Random card discovery with full Scryfall filter support
+- Multi-card lookups in a single message
+- Structured logging, duplicate suppression, and graceful shutdown
+
+## Stack
+
+| Component | Choice |
+| --- | --- |
+| Language | Python 3.13 |
+| Package manager | `uv` |
+| Discord client | `discord.py` |
+| HTTP client | `httpx` |
+| Packaging | `pyproject.toml` + Hatchling |
+| Lint / format | Ruff |
+| Type checking | Pyright |
+| Tests | pytest |
 
 ## Quick Start
 
 ### Requirements
 
-- [uv](https://docs.astral.sh/uv/) package manager
-- Python 3.13 (installed and pinned through `.python-version` / `uv python`)
-- Discord bot token with message content intent enabled
+- [uv](https://docs.astral.sh/uv/) installed locally
+- Python 3.13 available through `uv python`
+- A Discord bot token with message content intent enabled
 
-### Installation
+### Install
 
 ```bash
-uv python install 3.13
-uv python pin 3.13
-
 git clone https://github.com/dunamismax/mtg-card-bot.git
 cd mtg-card-bot
 
-cp .env.example .env  # add your MTG_DISCORD_TOKEN
+uv python install 3.13
 uv sync
 
-uv run python manage_bot.py start   # start with live logs
+cp .env.example .env
+# edit .env and set MTG_DISCORD_TOKEN
+```
 
-# optional: install local git hooks
-uv run pre-commit install
+### Run
+
+```bash
+# direct package entrypoint
+uv run mtg-card-bot
+
+# or use the local manager helper
+uv run python manage_bot.py start
 ```
 
 ## Configuration
 
-Environment variables can be set in `.env`:
+Set environment variables in `.env` or in the process environment:
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `MTG_DISCORD_TOKEN` | Discord bot token (required) | — |
+| `MTG_DISCORD_TOKEN` | Discord bot token | required |
 | `MTG_COMMAND_PREFIX` | Command prefix | `!` |
 | `MTG_LOG_LEVEL` | `debug`, `info`, `warning`, `error` | `info` |
-| `MTG_JSON_LOGGING` | Structured JSON logs | `false` |
-| `MTG_COMMAND_COOLDOWN` | Seconds between commands per user | `2.0` |
+| `MTG_JSON_LOGGING` | Emit JSON logs | `false` |
+| `MTG_COMMAND_COOLDOWN` | Per-user cooldown in seconds | `2.0` |
 
-## Using the Bot
+## Usage
 
 ### Core Commands
 
-- ``!lightning bolt`` or `[[Lightning Bolt]]` – fuzzy card lookup with pricing
-- ``!rules counterspell`` – official Gatherer/Scryfall rulings
-- ``!random`` – random card, accepts filters (`!random rarity:mythic e:mh3`)
-- ``!help`` – in-Discord guide with examples
+- `!lightning bolt` or `[[Lightning Bolt]]` for fuzzy lookup
+- `!rules counterspell` for rulings
+- `!random` for a random card
+- `!random rarity:mythic e:mh3` for filtered random discovery
+- `!help` for the in-Discord command guide
 
-### Filters, Sorting, and Multi-Card
+### Query Features
 
-- Any Scryfall filter works: `e:who`, `type:legendary`, `is:showcase`, `mana>={5}`
-- Rank results with `order:` / `dir:`: `order:edhrec`, `order:usd dir:desc`
-- Semicolons request multiple cards in one message: ``!bolt; counterspell; doom blade``
-- Filtered lookups without an order pick varied prints automatically
-
-### Aliases
-
-`!r`, `!rand`, `!h`, and `!?` mirror the long-form commands.
-
-## Features
-
-- Smart fuzzy search with typo tolerance and bracket syntax
-- Live pricing (USD/EUR/foil/tix) and legality summaries
-- Random card discovery with Scryfall-compliant rate limiting (10 req/s)
-- Multi-card grid display with image attachments
-- Oracle tag and advanced filter support for cube/EDH searching
-- Structured logging, graceful shutdown, and duplicate suppression
+- Any Scryfall search filter works, including `e:who`, `type:legendary`, and `mana>={5}`
+- Use `order:` and `dir:` for ranked results like `order:usd dir:desc`
+- Separate multiple lookups with semicolons: `!bolt; counterspell; doom blade`
+- Aliases: `!r`, `!rand`, `!h`, and `!?`
 
 ## Development
 
 ```bash
 uv sync
+uv run pre-commit install
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run pytest
-uv run pre-commit run --all-files
-uv run python manage_bot.py logs
 ```
 
-## Testing and CI
+The same four quality gates run in CI. The test suite uses mocks and fake Discord/Scryfall interactions so local verification stays fast and deterministic.
 
-- Local verification uses the same flow as CI: `uv sync`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run pyright`, and `uv run pytest`.
-- GitHub Actions runs that verification on every push to `main` and on pull requests.
-- The bot test suite uses mocks and fakes for Discord and Scryfall interactions so the checks stay fast and deterministic.
+## Project Layout
+
+```text
+src/mtg_card_bot/
+  __main__.py   - package entrypoint
+  bot.py        - Discord client and command handling
+  config.py     - environment loading and config validation
+  errors.py     - bot-specific error types
+  logging.py    - structured logging wrapper
+  scryfall.py   - async Scryfall client and card models
+tests/
+  test_*.py     - focused bot, config, error, and API client tests
+manage_bot.py   - local process manager for start/stop/status/logs
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and repo conventions.
 
 ## Deployment Notes
 
-- **Systemd:** run `manage_bot.py start` from a service pointing at your project directory.
-- **Docker:** base on `python:3.13-slim`, install `uv`, copy the project, `uv sync --frozen`, then run `uv run python manage_bot.py start`.
+- `systemd`: run from the repo root after `uv sync`, either via `uv run mtg-card-bot` or `uv run python manage_bot.py start`
+- Container builds: install `uv`, copy the repo, run `uv sync --frozen`, then start the package entrypoint
 
 ## License
 

@@ -2,14 +2,32 @@
 name = "mtg-card-bot"
 version = "2.0.0"
 description = "A Discord bot for looking up Magic: The Gathering cards using the Scryfall API"
-authors = [
-    { name = "Stephen Sawyer", email = "dunamismax@tutamail.com" },
-]
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Stephen Sawyer" }]
 requires-python = ">=3.13"
+keywords = ["discord", "magic-the-gathering", "mtg", "scryfall"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Framework :: AsyncIO",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment",
+    "Topic :: Internet",
+    "Typing :: Typed",
+]
 dependencies = [
     "discord.py>=2.0.0",
     "httpx>=0.28.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/dunamismax/mtg-card-bot"
+Repository = "https://github.com/dunamismax/mtg-card-bot"
+Issues = "https://github.com/dunamismax/mtg-card-bot/issues"
 
 [dependency-groups]
 dev = [
@@ -29,16 +47,16 @@ build-backend = "hatchling.build"
 mtg-card-bot = "mtg_card_bot.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["mtg_card_bot"]
+packages = ["src/mtg_card_bot"]
 
 [tool.hatch.build.targets.sdist]
 include = [
     ".env.example",
-    "BUILD.md",
+    "CONTRIBUTING.md",
     "LICENSE",
     "README.md",
     "manage_bot.py",
-    "mtg_card_bot",
+    "src/mtg_card_bot",
     "pyproject.toml",
     "tests",
 ]
@@ -46,12 +64,13 @@ include = [
 [tool.ruff]
 line-length = 88
 target-version = "py313"
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pyright]
-include = ["manage_bot.py", "mtg_card_bot", "tests"]
+include = ["manage_bot.py", "src", "tests"]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = "none"

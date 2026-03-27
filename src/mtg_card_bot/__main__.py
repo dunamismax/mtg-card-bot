@@ -7,7 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 from types import FrameType
 
-from . import config, logging
+from . import __version__, config, logging
 from .bot import MTGCardBot
 
 
@@ -36,7 +36,7 @@ async def async_main() -> None:
     logging.initialize_logger(cfg.log_level, cfg.json_logging)
     logger = logging.with_component("main")
 
-    logger.info("Starting MTG Card Bot", version="2.0.0")
+    logger.info("Starting MTG Card Bot", version=__version__)
 
     # Create and start the bot
     bot = MTGCardBot(cfg)
