@@ -74,12 +74,72 @@ class MTGCardBot(discord.Client):
 
     async def on_ready(self) -> None:
         """Called when the bot is ready."""
-        self.logger.info("Bot is ready", username=str(self.user))
+        guild_info = [
+            f"{g.name} (id={g.id}, members={g.member_count})"
+            for g in self.guilds
+        ]
+        self.logger.info(
+            "Bot is ready",
+            username=str(self.user),
+            guild_count=len(self.guilds),
+            guilds=", ".join(guild_info) if guild_info else "NO GUILDS",
+        )
+        if not self.guilds:
+            self.logger.warning(
+                "Bot is not in any guilds! "
+                "Invite it using the OAuth2 URL from the Discord Developer Portal."
+            )
+
+    async def on_disconnect(self) -> None:
+        """Called when the bot disconnects from Discord."""
+        self.logger.warning("Bot disconnected from Discord gateway")
+
+    async def on_resumed(self) -> None:
+        """Called when the bot resumes a session after disconnect."""
+        self.logger.info("Bot resumed Discord gateway session")
+
+    async def on_error(
+        self, event_method: str, *args: object, **kwargs: object
+    ) -> None:
+        """Called when an event handler raises an exception."""
+        import traceback
+
+        self.logger.error(
+            "Unhandled exception in event handler",
+            event=event_method,
+            error=traceback.format_exc(),
+        )
 
     async def on_message(self, message: discord.Message) -> None:
         """Handle incoming messages."""
         # Ignore messages from bots
         if message.author.bot:
+            return
+
+        # Diagnostic: log every non-bot message received (debug level)
+        guild = getattr(message, "guild", None)
+        guild_name = getattr(guild, "name", "DM") if guild else "DM"
+        channel = getattr(message, "channel", None)
+        channel_name = getattr(channel, "name", "unknown") if channel else "unknown"
+        self.logger.debug(
+            "Message received",
+            author=message.author.name,
+            guild=str(guild_name),
+            channel=str(channel_name),
+            content_length=len(message.content),
+            content_preview=message.content[:80] if message.content else "<EMPTY>",
+        )
+
+        # Warn if message content is empty — likely means MESSAGE_CONTENT
+        # privileged intent is not enabled in the Discord Developer Portal
+        if not message.content:
+            self.logger.warning(
+                "Received message with empty content — the MESSAGE_CONTENT "
+                "privileged intent may not be enabled in the Discord Developer "
+                "Portal (https://discord.com/developers/applications)",
+                author=message.author.name,
+                guild=str(guild_name),
+            )
             return
 
         # If we've already processed this message (duplicate delivery), skip
