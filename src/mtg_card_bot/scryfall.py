@@ -209,13 +209,13 @@ class ScryfallClient:
 
     BASE_URL = "https://api.scryfall.com"
     USER_AGENT = "MTGCardBot/4.0"
-    RATE_LIMIT = 0.1  # 100ms between requests (10 requests per second max)
-    MAX_RETRIES = 3
-    RETRY_BACKOFF = 1.0  # Base delay in seconds; doubles each retry
+    RATE_LIMIT = 0.075  # 75ms between requests
+    MAX_RETRIES = 2
+    RETRY_BACKOFF = 0.5  # Base delay in seconds; doubles each retry
 
     def __init__(self) -> None:
         self.client = httpx.AsyncClient(
-            timeout=30.0,
+            timeout=15.0,
             follow_redirects=True,
             headers={
                 "User-Agent": self.USER_AGENT,

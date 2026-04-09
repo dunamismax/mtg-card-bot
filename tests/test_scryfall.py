@@ -80,7 +80,7 @@ async def test_request_retries_on_503_then_succeeds() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal call_count
         call_count += 1
-        if call_count < 3:
+        if call_count < 2:
             return httpx.Response(503, text="Service Unavailable")
         return httpx.Response(
             200,
@@ -99,7 +99,7 @@ async def test_request_retries_on_503_then_succeeds() -> None:
         await client.close()
 
     assert card.name == "Black Lotus"
-    assert call_count == 3
+    assert call_count == 2
 
 
 async def test_request_exhausts_retries_on_persistent_503() -> None:

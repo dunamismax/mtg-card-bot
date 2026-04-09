@@ -105,7 +105,6 @@ def _apply_rounded_corners(img: Image.Image, radius: int) -> Image.Image:
 
 async def compose_card_grid(
     cards: list["Card"],
-    http_client: httpx.AsyncClient,
 ) -> io.BytesIO:
     """Compose multiple card images into a single grid image.
 
@@ -117,12 +116,14 @@ async def compose_card_grid(
 
     cols, rows = calculate_grid_layout(len(cards))
 
-    # Download all images concurrently
+    # Download all images concurrently using a dedicated client
+    # (image CDN requests should not share the API client's connection pool)
     image_urls = [
         card.get_best_image_url(("normal", "large", "small")) for card in cards
     ]
-    download_tasks = [_download_image(http_client, url) for url in image_urls]
-    raw_images = await asyncio.gather(*download_tasks)
+    async with httpx.AsyncClient(timeout=15.0) as img_client:
+        download_tasks = [_download_image(img_client, url) for url in image_urls]
+        raw_images = await asyncio.gather(*download_tasks)
 
     # Apply rounded corners or create placeholders
     card_images: list[Image.Image] = []

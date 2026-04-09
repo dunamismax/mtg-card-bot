@@ -1,6 +1,6 @@
 import io
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -31,6 +31,20 @@ def _make_fake_card(**overrides: Any) -> MagicMock:
         "image_url", "https://img.example/card.png"
     )
     return card
+
+
+def _mock_httpx_client(handler):
+    """Create a context manager patch that injects a mock httpx client."""
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    class FakeContext:
+        async def __aenter__(self):
+            return mock_client
+
+        async def __aexit__(self, *args):
+            await mock_client.aclose()
+
+    return patch("mtg_card_bot.grid.httpx.AsyncClient", return_value=FakeContext())
 
 
 class TestGridLayout:
@@ -65,13 +79,10 @@ class TestGridComposition:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=test_image_bytes)
 
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         cards = [_make_fake_card(name=f"Card {i}") for i in range(3)]
 
-        try:
-            result = await compose_card_grid(cards, client)
-        finally:
-            await client.aclose()
+        with _mock_httpx_client(handler):
+            result = await compose_card_grid(cards)
 
         # Verify it's a valid PNG
         img = Image.open(result)
@@ -88,13 +99,10 @@ class TestGridComposition:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=test_image_bytes)
 
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         cards = [_make_fake_card(name=f"Card {i}") for i in range(4)]
 
-        try:
-            result = await compose_card_grid(cards, client)
-        finally:
-            await client.aclose()
+        with _mock_httpx_client(handler):
+            result = await compose_card_grid(cards)
 
         img = Image.open(result)
         expected_width = 2 * CARD_WIDTH + 3 * PADDING
@@ -112,13 +120,10 @@ class TestGridComposition:
                 return httpx.Response(500, text="Server Error")
             return httpx.Response(200, content=test_image_bytes)
 
-        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         cards = [_make_fake_card(name=f"Card {i}") for i in range(3)]
 
-        try:
-            result = await compose_card_grid(cards, client)
-        finally:
-            await client.aclose()
+        with _mock_httpx_client(handler):
+            result = await compose_card_grid(cards)
 
         # Should still produce a valid image with placeholder for failed card
         img = Image.open(result)

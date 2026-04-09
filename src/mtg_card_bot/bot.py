@@ -477,9 +477,7 @@ class MTGCardBot(discord.Client):
         # Build the composite grid image
         cards_for_grid = [card for _, card in valid_cards]
         try:
-            grid_buffer = await compose_card_grid(
-                cards_for_grid, self.scryfall_client.client
-            )
+            grid_buffer = await compose_card_grid(cards_for_grid)
         except Exception as e:
             self.logger.error("Grid composition failed", error=str(e))
             await self._send_error_message(
