@@ -120,4 +120,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and repo con
 
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
