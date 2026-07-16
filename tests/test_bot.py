@@ -229,22 +229,18 @@ async def test_multi_card_sends_grid_embed_with_file(
 
     monkeypatch.setattr(bot, "_resolve_card_query", fake_resolve)
 
-    # Mock the grid compositor to avoid real image downloads
     import io
 
-    from mtg_card_bot import grid
-
     fake_buffer = io.BytesIO(b"fake-png-data")
-
-    async def fake_compose(*args: Any, **kwargs: Any) -> io.BytesIO:
-        return fake_buffer
-
-    monkeypatch.setattr(grid, "compose_card_grid", fake_compose)
+    compose = AsyncMock(return_value=fake_buffer)
+    monkeypatch.setattr("mtg_card_bot.bot.compose_card_grid", compose)
 
     channel = FakeChannel()
     message = FakeMessage("!bolt; counterspell; nope", message_id=200, channel=channel)
 
     await bot.on_message(cast(Any, message))
+
+    compose.assert_awaited_once_with([bolt, counterspell])
 
     # Should send one message with embed + file
     assert len(channel.sent_messages) == 1

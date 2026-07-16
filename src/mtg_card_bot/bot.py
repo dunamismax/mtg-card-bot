@@ -464,10 +464,8 @@ class MTGCardBot(discord.Client):
         async def _resolve_with_timeout(query: str) -> MultiResolvedCard:
             try:
                 return await asyncio.wait_for(_resolve_one(query), timeout=20.0)
-            except asyncio.TimeoutError:
-                self.logger.warning(
-                    "Card resolution timed out", query=query
-                )
+            except TimeoutError:
+                self.logger.warning("Card resolution timed out", query=query)
                 return MultiResolvedCard(
                     query, error=TimeoutError(f"Timed out resolving: {query}")
                 )
@@ -636,7 +634,7 @@ class MTGCardBot(discord.Client):
         return " ".join(card_name_parts).strip()
 
     def _extract_filter_parts(self, query: str) -> str:
-        """Extract only the Scryfall filter tokens from a query (e.g. 'is:borderless e:one')."""
+        """Extract Scryfall filter tokens (for example, ``is:borderless e:one``)."""
         words = query.split()
         filter_parts = []
 

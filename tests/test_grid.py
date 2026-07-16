@@ -1,5 +1,6 @@
 import io
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -9,10 +10,14 @@ from PIL import Image
 from mtg_card_bot.grid import (
     CARD_HEIGHT,
     CARD_WIDTH,
+    IMAGE_ACCEPT,
     PADDING,
     calculate_grid_layout,
     compose_card_grid,
 )
+from mtg_card_bot.scryfall import Card, ScryfallClient
+
+AsyncClient = httpx.AsyncClient
 
 
 def _make_test_card_image() -> bytes:
@@ -23,28 +28,26 @@ def _make_test_card_image() -> bytes:
     return buf.getvalue()
 
 
-def _make_fake_card(**overrides: Any) -> MagicMock:
+def _make_fake_card(**overrides: Any) -> Card:
     """Create a minimal mock Card for grid tests."""
     card = MagicMock()
     card.get_display_name.return_value = overrides.get("name", "Test Card")
     card.get_best_image_url.return_value = overrides.get(
         "image_url", "https://img.example/card.png"
     )
-    return card
+    return cast(Card, card)
 
 
-def _mock_httpx_client(handler):
-    """Create a context manager patch that injects a mock httpx client."""
-    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+def _mock_httpx_client(
+    handler: Callable[[httpx.Request], httpx.Response],
+):
+    """Patch the grid client while preserving its production configuration."""
 
-    class FakeContext:
-        async def __aenter__(self):
-            return mock_client
+    def factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return AsyncClient(*args, **kwargs)
 
-        async def __aexit__(self, *args):
-            await mock_client.aclose()
-
-    return patch("mtg_card_bot.grid.httpx.AsyncClient", return_value=FakeContext())
+    return patch("mtg_card_bot.grid.httpx.AsyncClient", side_effect=factory)
 
 
 class TestGridLayout:
@@ -77,6 +80,8 @@ class TestGridComposition:
         test_image_bytes = _make_test_card_image()
 
         def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["User-Agent"] == ScryfallClient.USER_AGENT
+            assert request.headers["Accept"] == IMAGE_ACCEPT
             return httpx.Response(200, content=test_image_bytes)
 
         cards = [_make_fake_card(name=f"Card {i}") for i in range(3)]
@@ -130,3 +135,15 @@ class TestGridComposition:
         assert img.format == "PNG"
         assert img.size[0] > 0
         assert img.size[1] > 0
+
+    async def test_compose_raises_when_all_downloads_fail(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, text="Rejected generic User-Agent")
+
+        cards = [_make_fake_card(name=f"Card {i}") for i in range(2)]
+
+        with (
+            _mock_httpx_client(handler),
+            pytest.raises(RuntimeError, match="All card image downloads failed"),
+        ):
+            await compose_card_grid(cards)

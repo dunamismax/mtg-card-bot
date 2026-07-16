@@ -7,8 +7,13 @@ from typing import TYPE_CHECKING
 import httpx
 from PIL import Image, ImageDraw, ImageFont
 
+from . import logging
+from .scryfall import ScryfallClient
+
 if TYPE_CHECKING:
     from .scryfall import Card
+
+logger = logging.with_component("card_grid")
 
 # Card image dimensions for "normal" Scryfall format
 CARD_WIDTH = 488
@@ -20,6 +25,7 @@ BG_COLOR = (30, 31, 34)  # Discord dark theme (#1e1f22)
 CORNER_RADIUS = 16
 PLACEHOLDER_COLOR = (55, 57, 63)  # Slightly lighter than background
 PLACEHOLDER_TEXT_COLOR = (180, 180, 180)
+IMAGE_ACCEPT = "image/jpeg,image/png,image/*;q=0.8,*/*;q=0.5"
 
 
 def calculate_grid_layout(count: int) -> tuple[int, int]:
@@ -49,10 +55,19 @@ def calculate_grid_layout(count: int) -> tuple[int, int]:
 async def _download_image(client: httpx.AsyncClient, url: str) -> Image.Image | None:
     """Download a single card image. Returns None on failure."""
     try:
-        response = await client.get(url, follow_redirects=True)
+        response = await client.get(url)
         response.raise_for_status()
         return Image.open(io.BytesIO(response.content)).convert("RGBA")
-    except Exception:
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Card image download failed",
+            url=url,
+            status=exc.response.status_code,
+            response=exc.response.text[:160].replace("\n", " "),
+        )
+        return None
+    except Exception as exc:
+        logger.warning("Card image download failed", url=url, error=str(exc))
         return None
 
 
@@ -95,7 +110,7 @@ def _apply_rounded_corners(img: Image.Image, radius: int) -> Image.Image:
 
     # Resize to expected card dimensions if needed
     if img.size != (CARD_WIDTH, CARD_HEIGHT):
-        img = img.resize((CARD_WIDTH, CARD_HEIGHT), Image.LANCZOS)
+        img = img.resize((CARD_WIDTH, CARD_HEIGHT), Image.Resampling.LANCZOS)
 
     mask = _make_rounded_mask(CARD_WIDTH, CARD_HEIGHT, radius)
     output = Image.new("RGBA", (CARD_WIDTH, CARD_HEIGHT), (0, 0, 0, 0))
@@ -121,9 +136,19 @@ async def compose_card_grid(
     image_urls = [
         card.get_best_image_url(("normal", "large", "small")) for card in cards
     ]
-    async with httpx.AsyncClient(timeout=15.0) as img_client:
+    async with httpx.AsyncClient(
+        timeout=15.0,
+        follow_redirects=True,
+        headers={
+            "User-Agent": ScryfallClient.USER_AGENT,
+            "Accept": IMAGE_ACCEPT,
+        },
+    ) as img_client:
         download_tasks = [_download_image(img_client, url) for url in image_urls]
         raw_images = await asyncio.gather(*download_tasks)
+
+    if not any(image is not None for image in raw_images):
+        raise RuntimeError("All card image downloads failed")
 
     # Apply rounded corners or create placeholders
     card_images: list[Image.Image] = []
