@@ -5,36 +5,48 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '43 8 * * 2'
+
+permissions:
+  contents: read
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version-file: .python-version
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen
 
       - name: Ruff lint
-        run: uv run ruff check .
+        run: uv run --frozen ruff check .
 
       - name: Ruff format check
-        run: uv run ruff format --check .
+        run: uv run --frozen ruff format --check .
 
       - name: Pyright
-        run: uv run pyright
+        run: uv run --frozen pyright
 
       - name: Pytest
-        run: uv run pytest
+        run: uv run --frozen pytest
+
+      - name: Advisory check (locked runtime dependencies)
+        run: |
+          uv export --frozen --no-dev --no-hashes --no-emit-project > /tmp/mtg-requirements.txt
+          uvx --from pip-audit==2.9.0 pip-audit -r /tmp/mtg-requirements.txt

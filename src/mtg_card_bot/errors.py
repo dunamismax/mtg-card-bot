@@ -3,7 +3,7 @@
 from enum import Enum
 
 
-class ErrorType(str, Enum):
+class ErrorType(str, Enum):  # noqa: UP042 - Keep existing string Enum formatting.
     """Error type enumeration."""
 
     API = "api_error"
