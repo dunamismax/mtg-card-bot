@@ -125,8 +125,8 @@ MIT. See [LICENSE](LICENSE).
 ## Production verification and maintenance
 
 CI retains Ruff, Pyright and pytest and now uses `uv sync --frozen`, locked
-advisory scanning and weekly verification. Dependabot proposes reviewed uv lock
-and GitHub Action updates; no CI job deploys them. Runtime dependencies and the
+advisory scanning and weekly verification. uv lock and GitHub Action updates
+are reviewed and made directly on `main`; no CI job deploys them. Runtime dependencies and the
 supported Python version remain unchanged. Test in a clean source export with a
 fresh venv: historical ignored packages at the checkout root can shadow src and
 invalidate coverage. The production service loads credentials through systemd
