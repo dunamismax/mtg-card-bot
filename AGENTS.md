@@ -1,5 +1,22 @@
 # AGENTS.md
 
+## Git rules (owner's standing instructions)
+
+These override any other workflow described in this repository or by your tools.
+
+- Work on `main` only. Never create branches, worktrees or pull requests.
+  Commit directly to `main` and push with `git push origin main`. `origin`
+  pushes to both GitHub and Codeberg, so one push updates both.
+- No AI attribution anywhere: no `Co-Authored-By` trailers, no "Generated
+  with ..." lines, and no crediting Claude, Anthropic, ChatGPT, OpenAI or any
+  AI tool in commit messages, tags, release notes, code, comments or file
+  headers. Use the owner's configured git identity and never change git config.
+  Content the project deliberately publishes about AI, such as a reader-facing
+  disclosure, is not attribution.
+- After committing, push `main` right away, at the latest before the session
+  ends. Before committing, run the project's checks, review `git status` for
+  stray files, and never commit what `.gitignore` excludes.
+
 ## Purpose
 
 This OpenClaw workspace is Scry's live operating surface.
@@ -218,9 +235,9 @@ Go defaults:
 - pgx/v5 as the normal PostgreSQL driver path
 - SQLite only for deliberately local-first, embedded, or very small utilities
 
-For repos with multiple `remote.origin.pushurl` values, prefer routine pushes via `git push origin <branch>` so local tracking state stays intuitive. Use explicit push URLs only when you intentionally need per-target verification or diagnostics.
+For repos with multiple `remote.origin.pushurl` values, push with `git push origin main` so local tracking state stays intuitive. Use explicit push URLs only when you intentionally need per-target verification or diagnostics.
 
-Stephen's standard repo setup is dual-push SSH on `origin`: one GitHub SSH fetch URL plus GitHub and Codeberg SSH `pushurl` entries. When touching his repos, validate that this setup is present or normalize it if needed. When finishing normal repo work that should be saved remotely, commit the changes, push with `git push origin main` (or the current branch when it is not `main`), and verify the repo is current afterward.
+Stephen's standard repo setup is dual-push SSH on `origin`: one GitHub SSH fetch URL plus GitHub and Codeberg SSH `pushurl` entries. When touching his repos, validate that this setup is present or normalize it if needed. When finishing normal repo work that should be saved remotely, commit the changes, push with `git push origin main` (never create branches, worktrees or pull requests), and verify the repo is current afterward.
 
 When committing, pushing, or describing shipped repo work for Stephen, attribute the work to Stephen Sawyer / `dunamismax` only unless he explicitly asks for different attribution. Do not add AI, Scry, Claude, Codex, "assisted by AI", co-author, or similar attribution language in commit messages, trailers, release notes, or push summaries by default.
 
