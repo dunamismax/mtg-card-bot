@@ -182,36 +182,28 @@ When a task touches a checked-out codebase, read that repo's local docs after `S
 
 For repo-local `BUILD.md` files, treat them as greenfield build manuals, not permanent repo furniture. Once a repo is out of the initial build phase, Stephen's preference is to remove `BUILD.md`, fold any still-useful current-state guidance into stable docs such as `README.md`, `CONTRIBUTING.md`, `docs/operations.md`, or `docs/development.md`, and keep the repo on current truth instead of a lingering phase tracker. Only keep or create a `BUILD.md` when the repo is genuinely in an active greenfield build phase or Stephen explicitly asks for one.
 
-Stephen's current stack: Python + Go remain the primary backend lanes. The default fullstack web lane is TypeScript + Bun + Astro + Vue + Elysia + Tailwind v4 + Figma + Zod + PostgreSQL + Docker Compose + Caddy. OpenTUI + TypeScript + Bun is the default terminal frontend lane for rich TUIs and terminal-first products.
+Stephen's current stack: Python and Go remain the primary backend lanes. All web work is Astro + strict TypeScript + Node + PostgreSQL, served by Caddy on Ubuntu.
 
-The canonical fullstack web tech stack doc lives at `~/github/dunamismax/tech-stacks/web-fullstack-tech-stack.md`. When working on any repo in that lane, read it first.
+The canonical, project-by-project stack reference is `~/github/dunamismax/TECH_STACK.md`. Read it before working on any web repo.
 
-**UI work routing rule:** All UI, frontend, styling, and component work in the fullstack web lane must be performed by Claude (Opus) only. Do not use OpenAI Codex for any UI, styling, component, or frontend task. When spawning sub-agents for frontend work, use Claude, not Codex.
+**UI work routing rule:** All UI, frontend, styling, and component work in the web lane must be performed by Claude (Opus) only. Do not use OpenAI Codex for any UI, styling, component, or frontend task. When spawning sub-agents for frontend work, use Claude, not Codex.
 
 For new work or rewrites, default to:
 
 - **Python** for backends, APIs, automation, scripting, data work, and application logic where Python is the best fit
 - **Go** for networking, systems daemons, and performance-critical or concurrency-heavy backends where Go earns it
-- **TypeScript + Bun + Astro + Vue + Elysia + Tailwind v4 + Figma + Zod + PostgreSQL + Caddy** for fullstack web products
-- **TypeScript + Bun + OpenTUI** for terminal frontends, with dual web + TUI frontends preferred when the product shape justifies both
+- **Astro + strict TypeScript + PostgreSQL + Caddy** for websites and web applications
 
-Fullstack web defaults:
+Web defaults:
 
-- Bun for runtime, package management, scripts, and tests
-- Bun workspace monorepo shape (`apps/web`, `apps/api`, `packages/contracts`)
-- Astro for page composition and server-first delivery; Vue only when the UI earns it
-- Figma for design specs and design-to-code translation (via MCP)
-- Tailwind CSS v4 for utility-first styling with CSS-native tokens (no tailwind.config)
-- Elysia for the Bun-native HTTP API layer
-- Zod for shared validation and contract definitions
-- PostgreSQL with `postgres` driver, raw SQL first, Kysely only when earned
-- SQL migration files checked into the repo
-- Server-side sessions with secure cookies (no JWT by default)
-- Biome for lint and format, `tsc --noEmit` and `astro check` for types
-- Playwright for browser E2E
-- Docker Compose for local orchestration and single-host deploy
-- Caddy for TLS, reverse proxy, and edge delivery
-- `bun run dev` as dev entrypoint, `bun run verify` as quality gate
+- Astro 7 for pages, static generation and server rendering (`@astrojs/node` standalone)
+- Strict TypeScript 6 (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`)
+- Node 24 and npm: exact dependency pins, committed `package-lock.json`, `npm ci`
+- PostgreSQL 18 through `pg`, with Drizzle ORM and reviewed `drizzle-kit` migrations checked into the repo
+- Separate database roles for readers, publishers, collectors and migrations
+- Semantic HTML and hand-written CSS; no browser framework, and little or no client JavaScript
+- `astro check`, `tsc --noEmit`, project tests and a production build as the quality gate
+- Caddy for TLS and reverse proxy, systemd for services and timers, and immutable commit-based releases switched by an atomic `current` symlink
 
 Python defaults:
 
