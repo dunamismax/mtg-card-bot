@@ -517,7 +517,7 @@ wheels = [
 
 [[package]]
 name = "mtg-card-bot"
-version = "4.1.0"
+version = "5.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "discord-py" },
