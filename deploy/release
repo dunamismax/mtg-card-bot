@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 umask 022
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+cd /
 
 base=/opt/mtg-card-bot
 repo=/home/sawyer/github/mtg-card-bot

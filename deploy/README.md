@@ -85,7 +85,7 @@ a missing `current` link before starting the service. Run this on the rebuilt
 VM before enabling the bot.
 
 ```sh
-revision=$(sed -n 's/^# Release: //p'   /etc/systemd/system/mtg-card-bot.service.d/60-release.conf)
+revision=$(sed -n 's/^# Release: //p' /etc/systemd/system/mtg-card-bot.service.d/60-release.conf)
 sudo mtg-card-bot-release prepare "$revision"
 sudo /usr/local/sbin/with-deploy-lock ln -s "releases/$revision" /opt/mtg-card-bot/current
 sudo systemctl daemon-reload
