@@ -53,3 +53,22 @@ def test_validate_config_rejects_invalid_log_level(
 
     with pytest.raises(ValueError, match="Invalid log level"):
         cfg.validate_config()
+
+
+def test_config_rejects_invalid_rate_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MTG_DISCORD_TOKEN", "test-token")
+    monkeypatch.setenv("MTG_COMMAND_BURST", "0")
+
+    with pytest.raises(ValueError, match="MTG_COMMAND_BURST"):
+        MTGConfig().validate_config()
+
+
+def test_config_new_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in ("MTG_COMMAND_BURST", "MTG_CACHE_TTL", "MTG_SYNC_COMMANDS"):
+        monkeypatch.delenv(key, raising=False)
+
+    cfg = MTGConfig()
+
+    assert cfg.command_burst == 3
+    assert cfg.cache_ttl == 21600
+    assert cfg.sync_commands is True

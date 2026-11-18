@@ -24,15 +24,22 @@ class MTGError(Exception):
         error_type: ErrorType,
         message: str,
         cause: Exception | None = None,
+        *,
+        suggestions: list[str] | None = None,
     ) -> None:
         self.error_type = error_type
         self.message = message
         self.cause = cause
+        self.suggestions = list(suggestions or [])
         super().__init__(message)
 
 
 def create_error(
-    error_type: ErrorType, message: str, cause: Exception | None = None
+    error_type: ErrorType,
+    message: str,
+    cause: Exception | None = None,
+    *,
+    suggestions: list[str] | None = None,
 ) -> MTGError:
     """Create an MTGError with the given type and message."""
-    return MTGError(error_type, message, cause)
+    return MTGError(error_type, message, cause, suggestions=suggestions)

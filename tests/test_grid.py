@@ -13,6 +13,7 @@ from mtg_card_bot.grid import (
     IMAGE_ACCEPT,
     PADDING,
     calculate_grid_layout,
+    compose_card_faces,
     compose_card_grid,
 )
 from mtg_card_bot.scryfall import Card, ScryfallClient
@@ -89,9 +90,9 @@ class TestGridComposition:
         with _mock_httpx_client(handler):
             result = await compose_card_grid(cards)
 
-        # Verify it's a valid PNG
+        # Verify it's a valid JPEG
         img = Image.open(result)
-        assert img.format == "PNG"
+        assert img.format == "JPEG"
 
         # Verify dimensions: 3 columns, 1 row
         expected_width = 3 * CARD_WIDTH + 4 * PADDING
@@ -132,7 +133,7 @@ class TestGridComposition:
 
         # Should still produce a valid image with placeholder for failed card
         img = Image.open(result)
-        assert img.format == "PNG"
+        assert img.format == "JPEG"
         assert img.size[0] > 0
         assert img.size[1] > 0
 
@@ -147,3 +148,58 @@ class TestGridComposition:
             pytest.raises(RuntimeError, match="All card image downloads failed"),
         ):
             await compose_card_grid(cards)
+
+
+async def test_compose_card_faces_places_both_faces_side_by_side() -> None:
+    test_image_bytes = _make_test_card_image()
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(200, content=test_image_bytes)
+
+    card = Card(
+        {
+            "object": "card",
+            "name": "Front // Back",
+            "card_faces": [
+                {
+                    "name": "Front",
+                    "image_uris": {"normal": "https://img.example/f.jpg"},
+                },
+                {"name": "Back", "image_uris": {"normal": "https://img.example/b.jpg"}},
+            ],
+        }
+    )
+
+    with _mock_httpx_client(handler):
+        result = await compose_card_faces(card)
+
+    img = Image.open(result)
+    assert img.size == (2 * CARD_WIDTH + 3 * PADDING, CARD_HEIGHT + 2 * PADDING)
+    assert sorted(requested) == [
+        "https://img.example/b.jpg",
+        "https://img.example/f.jpg",
+    ]
+
+
+async def test_compose_card_faces_requires_two_faces() -> None:
+    card = Card({"object": "card", "name": "Opt", "image_uris": {"normal": "x"}})
+    with pytest.raises(ValueError, match="fewer than two"):
+        await compose_card_faces(card)
+
+
+async def test_ten_card_grid_stays_small() -> None:
+    noisy = Image.effect_noise((CARD_WIDTH, CARD_HEIGHT), 64).convert("RGB")
+    buffer = io.BytesIO()
+    noisy.save(buffer, format="PNG")
+    payload = buffer.getvalue()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=payload)
+
+    cards = [_make_fake_card(name=f"Card {i}") for i in range(10)]
+    with _mock_httpx_client(handler):
+        result = await compose_card_grid(cards)
+
+    assert len(result.getvalue()) < 8 * 1024 * 1024

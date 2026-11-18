@@ -4,11 +4,21 @@ Discord bot for fast Magic: The Gathering card lookups with live pricing, legali
 
 ## What It Does
 
-- Fuzzy card lookup with bracket syntax like `[[Lightning Bolt]]`
-- Live card pricing, legality summaries, and rulings
-- Random card discovery with full Scryfall filter support
-- Multi-card lookups in a single message
-- Structured logging, duplicate suppression, and graceful shutdown
+- Card lookups anywhere in a message with `[[Lightning Bolt]]`, prefix commands
+  like `!lightning bolt`, or slash commands (`/card`) with live name autocomplete
+- Typo-tolerant matching that still answers when Scryfall's fuzzy match gives
+  up: ambiguous names (`bolt`) return the most-played match, chatty input
+  (`generous pup would go good in that`) finds the card, comma lists split into
+  several cards, and true misses get "did you mean" suggestions
+- Prices (with the cheapest paper printing), format legality including bans
+  and restrictions, official rulings, art crops, and specific printings by set
+  code or collector number
+- Double-faced cards show both faces; multi-card lookups return one composite
+  image of up to 10 cards
+- Replies thread to the request, editing a message re-runs a fixed lookup, and
+  per-user burst limits keep chats friendly
+- Respects Scryfall's per-endpoint rate limits, backs off on HTTP 429, batches
+  multi-card lookups into a single request, and caches responses
 
 ## Stack
 
@@ -64,25 +74,43 @@ Set environment variables in `.env` or in the process environment:
 | `MTG_COMMAND_PREFIX` | Command prefix | `!` |
 | `MTG_LOG_LEVEL` | `debug`, `info`, `warning`, `error` | `info` |
 | `MTG_JSON_LOGGING` | Emit JSON logs | `false` |
-| `MTG_COMMAND_COOLDOWN` | Per-user cooldown in seconds | `2.0` |
+| `MTG_COMMAND_COOLDOWN` | Seconds per lookup once a user's burst is spent (`0` disables) | `2.0` |
+| `MTG_COMMAND_BURST` | Lookups a user can make back to back | `3` |
+| `MTG_CACHE_TTL` | Seconds to cache Scryfall responses (`0` disables) | `21600` |
+| `MTG_SYNC_COMMANDS` | Register slash commands at startup | `true` |
+
+Slash commands appear in servers where the bot was invited with the
+`applications.commands` scope. Message lookups need the Message Content intent.
 
 ## Usage
 
-### Core Commands
+### Looking up cards
 
-- `!lightning bolt` or `[[Lightning Bolt]]` for fuzzy lookup
-- `!rules counterspell` for rulings
-- `!random` for a random card
-- `!random rarity:mythic e:mh3` for filtered random discovery
-- `!help` for the in-Discord command guide
+- `[[Lightning Bolt]]` anywhere in a message, or several: `[[Bolt]] [[Counterspell]]`
+- `!lightning bolt`, or a list: `!bolt; counterspell; doom blade` (up to 10 cards)
+- `/card`, `/price`, `/rules`, `/legality`, `/art`, `/random`, `/help`
+- `!random` or `!random t:dragon r:mythic` for a random card
+- `!help` (aliases `!h`, `!?`) for the in-Discord guide
 
-### Query Features
+### Choosing what to show
 
-- Any Scryfall search filter works, including `e:who`, `type:legendary`, and `mana>={5}`
-- Use `order:` and `dir:` for ranked results like `order:usd dir:desc`
-- Put several bracket lookups in one message (`[[Lightning Bolt]] [[Counterspell]]`)
-  or separate prefix lookups with semicolons (`!bolt; counterspell; doom blade`).
-- Aliases: `!r`, `!rand`, `!h`, and `!?`
+| Bracket | Prefix | Shows |
+| --- | --- | --- |
+| `[[name]]` | `!name` | Card image, mana cost, prices, legality |
+| `[[!name]]` | `!image name` | Card image only |
+| `[[$name]]` | `!price name` | Prices for the printing and the cheapest paper printing |
+| `[[?name]]` | `!rules name` | Official rulings |
+| `[[#name]]` | `!legal name` | Legal, restricted, banned, and not-legal formats |
+| | `!art name` | The illustration without the frame |
+
+### Printings and search syntax
+
+- `[[Sol Ring|LEA]]` picks a set; `[[Sol Ring|LEA|270]]` picks a collector number
+- Any Scryfall search filter works, including `e:who`, `type:legendary`,
+  `mana>={5}` and `usd<1`
+- `order:` and `dir:` rank results; price orders such as `order:usd dir:desc`
+  compare every printing
+- Unordered searches pick a random match from the first page for variety
 
 ## Development
 
@@ -102,13 +130,17 @@ The same four quality gates run in CI. The test suite uses mocks and fake Discor
 ```text
 src/mtg_card_bot/
   __main__.py   - package entrypoint
-  bot.py        - Discord client and command handling
+  bot.py        - Discord client, message routing, slash commands
   config.py     - environment loading and config validation
+  embeds.py     - Discord embed builders
   errors.py     - bot-specific error types
+  grid.py       - composite images for multi-card and double-faced lookups
   logging.py    - structured logging wrapper
-  scryfall.py   - async Scryfall client and card models
+  lookup.py     - card resolution with typo and ambiguity fallbacks
+  query.py      - parsing of brackets, modifiers, and Scryfall syntax
+  scryfall.py   - rate-limited, caching Scryfall client and card models
 tests/
-  test_*.py     - focused bot, config, error, and API client tests
+  test_*.py     - focused tests per module, all offline
 manage_bot.py   - local process manager for start/stop/status/logs
 ```
 

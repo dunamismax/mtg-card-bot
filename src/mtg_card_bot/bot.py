@@ -1,68 +1,151 @@
 """Main MTG Card Bot Discord bot implementation."""
 
+from __future__ import annotations
+
 import asyncio
-import re
 import time
-from contextlib import suppress
+import traceback
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 import discord
+from discord import app_commands
 
-from . import config, errors, logging
-from .grid import compose_card_grid
+from . import config, embeds, logging
+from .grid import GRID_FILENAME, compose_card_faces, compose_card_grid
+from .lookup import CardResolver, Resolution, comma_split_requests
+from .query import (
+    MAX_CARDS_PER_MESSAGE,
+    CardRequest,
+    LookupMode,
+    extract_bracket_requests,
+    parse_card_request,
+    split_multi_query,
+)
 from .scryfall import Card, ScryfallClient
 
+DUPLICATE_WINDOW = 2.5
+EDIT_WINDOW = 10 * 60
+MAX_EMBEDS_PER_MESSAGE = 10
+AUTOCOMPLETE_TIMEOUT = 2.5
+SLOW_DOWN_REACTION = "⏳"
 
-class MultiResolvedCard:
-    """Container for a resolved card query in multi-card lookups."""
+COMMAND_MODES: dict[str, LookupMode] = {
+    "rules": LookupMode.RULINGS,
+    "ruling": LookupMode.RULINGS,
+    "rulings": LookupMode.RULINGS,
+    "price": LookupMode.PRICES,
+    "prices": LookupMode.PRICES,
+    "$": LookupMode.PRICES,
+    "legal": LookupMode.LEGALITY,
+    "legality": LookupMode.LEGALITY,
+    "legalities": LookupMode.LEGALITY,
+    "formats": LookupMode.LEGALITY,
+    "art": LookupMode.ART,
+    "image": LookupMode.IMAGE,
+    "img": LookupMode.IMAGE,
+}
+HELP_WORDS = frozenset({"help", "h", "?"})
 
-    def __init__(
-        self,
-        query: str,
-        card: Card | None = None,
-        used_fallback: bool = False,
-        error: Exception | None = None,
-    ) -> None:
-        self.query = query
-        self.card = card
-        self.used_fallback = used_fallback
-        self.error = error
+
+@dataclass(slots=True)
+class MessagePlan:
+    """What a message asks the bot to do."""
+
+    help: bool = False
+    requests: list[CardRequest] = field(default_factory=list)
+    truncated: bool = False
+    usage_error: str | None = None
+
+
+@dataclass(slots=True)
+class Reply:
+    """Embeds and attachments to send back."""
+
+    embeds: list[discord.Embed] = field(default_factory=list)
+    files: list[discord.File] = field(default_factory=list)
+
+
+class Responder(Protocol):
+    async def send(self, reply: Reply) -> None: ...
+
+
+class MessageResponder:
+    """Replies to a chat message without pinging its author."""
+
+    def __init__(self, message: discord.Message) -> None:
+        self.message = message
+
+    async def send(self, reply: Reply) -> None:
+        if not reply.embeds:
+            return
+        kwargs: dict[str, Any] = {"embeds": reply.embeds}
+        if reply.files:
+            kwargs["files"] = reply.files
+        to_reference = getattr(self.message, "to_reference", None)
+        if to_reference is not None:
+            kwargs["reference"] = to_reference(fail_if_not_exists=False)
+            kwargs["mention_author"] = False
+        await self.message.channel.send(**kwargs)
+
+
+class InteractionResponder:
+    """Answers a deferred slash command interaction."""
+
+    def __init__(self, interaction: discord.Interaction) -> None:
+        self.interaction = interaction
+
+    async def send(self, reply: Reply) -> None:
+        kwargs: dict[str, Any] = {"embeds": reply.embeds}
+        if reply.files:
+            kwargs["files"] = reply.files
+        await self.interaction.followup.send(**kwargs)
 
 
 class MTGCardBot(discord.Client):
     """Discord bot for Magic: The Gathering card lookups."""
 
     def __init__(self, cfg: config.MTGConfig) -> None:
-        """Initialize the MTG Card Bot."""
         intents = discord.Intents.default()
         intents.message_content = True
-        super().__init__(intents=intents)
+        super().__init__(
+            intents=intents, allowed_mentions=discord.AllowedMentions.none()
+        )
         self.config = cfg
-
         self.logger = logging.with_component("mtg_card_bot")
-        self.scryfall_client = ScryfallClient()
+        self.scryfall_client = ScryfallClient(cache_ttl=cfg.cache_ttl)
+        self.resolver = CardResolver(self.scryfall_client)
+        self.tree = app_commands.CommandTree(self)
 
-        # Enhanced duplicate suppression structures
-        # Track recent (author, normalized_content) to timestamp
+        # Duplicate suppression: (author, normalized content) -> timestamp
         self._recent_commands: dict[tuple[int, str], float] = {}
-        # Track processed Discord message IDs
-        self._processed_message_ids: set[int] = set()
-        # Background cleanup task
+        # Discord message IDs already answered (duplicate gateway delivery)
+        self._processed_message_ids: dict[int, float] = {}
+        # Per-user token buckets: user id -> (tokens, last refill time)
+        self._rate_buckets: dict[int, tuple[float, float]] = {}
         self._cleanup_task: asyncio.Task[None] | None = None
 
-        # Performance improvements
-        self._user_rate_limits: dict[int, float] = {}  # Track per-user rate limits
+        self._register_app_commands()
+
+    # -- lifecycle -------------------------------------------------------------
 
     async def start(self, token: str | None = None, *, reconnect: bool = True) -> None:
         """Start the Discord client with the configured token by default."""
-        resolved_token = token or self.config.discord_token
-        await super().start(resolved_token, reconnect=reconnect)
+        await super().start(token or self.config.discord_token, reconnect=reconnect)
 
     async def setup_hook(self) -> None:
         """Called when the bot is starting up."""
-        # Start background cleanup task
         self._cleanup_task = asyncio.create_task(
             self._cleanup_duplicates_periodically()
         )
+        if self.config.sync_commands:
+            try:
+                synced = await self.tree.sync()
+                self.logger.info("Synced slash commands", count=len(synced))
+            except Exception as e:
+                self.logger.warning("Slash command sync failed", error=str(e))
         self.logger.info("MTG Card bot setup completed")
 
     async def on_ready(self) -> None:
@@ -83,8 +166,8 @@ class MTGCardBot(discord.Client):
             )
 
     async def on_disconnect(self) -> None:
-        """Called when the bot disconnects from Discord."""
-        self.logger.warning("Bot disconnected from Discord gateway")
+        """Gateway disconnects are routine; discord.py resumes automatically."""
+        self.logger.info("Bot disconnected from Discord gateway")
 
     async def on_resumed(self) -> None:
         """Called when the bot resumes a session after disconnect."""
@@ -94,819 +177,466 @@ class MTGCardBot(discord.Client):
         self, event_method: str, *args: object, **kwargs: object
     ) -> None:
         """Called when an event handler raises an exception."""
-        import traceback
-
         self.logger.error(
             "Unhandled exception in event handler",
             event=event_method,
             error=traceback.format_exc(),
         )
 
+    async def close(self) -> None:
+        """Clean shutdown of the bot."""
+        self.logger.info("Shutting down MTG Card bot")
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._cleanup_task
+        try:
+            await self.scryfall_client.close()
+        except Exception as e:
+            self.logger.warning("Error closing scryfall client", error=str(e))
+        self._recent_commands.clear()
+        self._processed_message_ids.clear()
+        self._rate_buckets.clear()
+        await super().close()
+
+    # -- message parsing -------------------------------------------------------
+
+    def _plan_message(self, content: str) -> MessagePlan | None:
+        """Work out what a message asks for, or None if it isn't for the bot."""
+        bracket_requests = extract_bracket_requests(content)
+        if bracket_requests:
+            return self._limit(bracket_requests)
+
+        prefix = self.config.command_prefix
+        if not prefix or not content.startswith(prefix):
+            return None
+        body = content[len(prefix) :].strip()
+        # Ignore "!!!", "! ", and similar chatter that merely starts with the prefix
+        if not body or body.startswith(prefix):
+            return None
+
+        command, _, args = body.partition(" ")
+        command = command.lower()
+        args = args.strip()
+
+        if command in HELP_WORDS and not args:
+            return MessagePlan(help=True)
+
+        mode = COMMAND_MODES.get(command)
+        # "!price of progress" is the card Price of Progress, not a price lookup
+        if mode is not None and args.lower().startswith("of "):
+            mode = None
+        if mode is not None:
+            if not args:
+                return MessagePlan(
+                    usage_error=f"Please provide a card name, e.g. `{prefix}{command} "
+                    "lightning bolt`."
+                )
+            parts = split_multi_query(args)
+        else:
+            mode = LookupMode.CARD
+            parts = split_multi_query(body)
+
+        requests = [
+            request
+            for part in parts
+            if (request := parse_card_request(part, mode=mode)) is not None
+        ]
+        if not requests:
+            return None
+        return self._limit(requests)
+
+    @staticmethod
+    def _limit(requests: list[CardRequest]) -> MessagePlan:
+        return MessagePlan(
+            requests=requests[:MAX_CARDS_PER_MESSAGE],
+            truncated=len(requests) > MAX_CARDS_PER_MESSAGE,
+        )
+
+    # -- abuse protection ------------------------------------------------------
+
+    def _allow_user(self, user_id: int, now: float | None = None) -> bool:
+        """Token bucket: a short burst is fine, sustained spam is not."""
+        cooldown = self.config.command_cooldown
+        if cooldown <= 0:
+            return True
+        now = time.monotonic() if now is None else now
+        burst = float(max(1, self.config.command_burst))
+        tokens, last = self._rate_buckets.get(user_id, (burst, now))
+        tokens = min(burst, tokens + (now - last) / cooldown)
+        if tokens < 1:
+            self._rate_buckets[user_id] = (tokens, now)
+            return False
+        self._rate_buckets[user_id] = (tokens - 1, now)
+        return True
+
+    def _is_duplicate(self, user_id: int, content: str, now: float) -> bool:
+        key = (user_id, " ".join(content.lower().split()))
+        last = self._recent_commands.get(key)
+        self._recent_commands[key] = now
+        return last is not None and now - last < DUPLICATE_WINDOW
+
+    # -- Discord events --------------------------------------------------------
+
     async def on_message(self, message: discord.Message) -> None:
         """Handle incoming messages."""
         if message.author.bot or not message.content:
             return
-
-        # If we've already processed this message (duplicate delivery), skip
         if message.id in self._processed_message_ids:
             return
 
-        bracket_queries = [
-            match.strip()
-            for match in re.findall(r"\[\[([^\[\]]+)\]\]", message.content)
-            if match.strip()
-        ]
-        if bracket_queries:
-            content = "; ".join(bracket_queries)
-        elif message.content.startswith(self.config.command_prefix):
-            content = message.content[len(self.config.command_prefix) :]
-        else:
+        plan = self._plan_message(message.content)
+        if plan is None:
             return
 
-        # Check per-user rate limiting
-        user_id = message.author.id
-        now = time.time()
-        last_command = self._user_rate_limits.get(user_id, 0)
-        cooldown = self.config.command_cooldown
-        if cooldown > 0 and now - last_command < cooldown:
+        now = time.monotonic()
+        if self._is_duplicate(message.author.id, message.content, now):
             self.logger.debug(
-                "Rate limited user",
-                user_id=str(user_id),
-                username=message.author.name,
-                time_since_last=now - last_command,
+                "Suppressed duplicate command", user_id=str(message.author.id)
             )
             return
-        self._user_rate_limits[user_id] = now
-
-        # Enhanced duplicate suppression with longer window and better logging
-        normalized = " ".join(content.lower().split())
-        key = (message.author.id, normalized)
-        last = self._recent_commands.get(key)
-
-        # Suppress duplicates within 2.5 seconds
-        if last is not None and (now - last) < 2.5:
-            self.logger.debug(
-                "Suppressed duplicate command",
-                user_id=str(message.author.id),
-                username=message.author.name,
-                content=normalized[:50],
-                time_since_last=now - last,
-            )
+        if not self._allow_user(message.author.id, now):
+            self.logger.debug("Rate limited user", user_id=str(message.author.id))
+            with suppress(Exception):
+                await message.add_reaction(SLOW_DOWN_REACTION)
             return
 
-        self._recent_commands[key] = now
-        self._processed_message_ids.add(message.id)
+        self._processed_message_ids[message.id] = now
+        await self._execute_plan(message, plan)
 
-        # If the content contains semicolons, treat as multi-card lookup
-        if ";" in content:
-            await self._handle_multi_card_lookup(message, content)
-            return
-
-        parts = content.split()
-        if not parts:
-            return
-
-        if bracket_queries:
-            await self._handle_card_lookup(message, " ".join(parts))
-            return
-
-        command = parts[0].lower()
-        args = parts[1:]
-
-        # Handle specific commands with aliases
-        if command in ["random", "rand", "r"]:
-            # Support filtered random: "random e:who rarity:mythic"
-            if args:
-                filter_query = " ".join(args)
-                await self._handle_random_card(message, filter_query)
-            else:
-                await self._handle_random_card(message)
-        elif command in ["help", "h", "?"]:
-            await self._handle_help(message)
-        elif command == "rules":
-            if args:
-                card_query = " ".join(args)
-                await self._handle_rules_lookup(message, card_query)
-            else:
-                await self._send_error_message(
-                    message.channel, "Please provide a card name for rules lookup."
-                )
-        else:
-            # Treat as card lookup
-            card_query = " ".join(parts)
-            await self._handle_card_lookup(message, card_query)
-
-    async def _handle_random_card(
-        self, message: discord.Message, filter_query: str = ""
+    async def on_message_edit(
+        self, before: discord.Message, after: discord.Message
     ) -> None:
-        """Handle the random card command with optional filters."""
-        if filter_query:
-            self.logger.info(
-                "Fetching filtered random card",
-                user_id=str(message.author.id),
-                username=message.author.name,
-                filter_query=filter_query,
-            )
-        else:
-            self.logger.info(
-                "Fetching random card",
-                user_id=str(message.author.id),
-                username=message.author.name,
-            )
-
-        try:
-            card = await self.scryfall_client.get_random_card(filter_query)
-            await self._send_card_message(
-                message.channel, card, False, filter_query or "random"
-            )
-        except Exception as e:
-            self.logger.error(
-                "Random card command failed",
-                user_id=str(message.author.id),
-                filter_query=filter_query,
-                error=str(e),
-            )
-            await self._send_error_message(
-                message.channel, self._user_error_message(e, filter_query, "random")
-            )
-
-    async def _handle_card_lookup(
-        self, message: discord.Message, card_query: str
-    ) -> None:
-        """Handle card lookup with support for filtering parameters."""
-        if not card_query:
-            await self._send_error_message(
-                message.channel, "Card query cannot be empty."
-            )
+        """Look up cards that a user added or fixed by editing their message."""
+        if after.author.bot or not after.content or before.content == after.content:
             return
-
-        self.logger.info(
-            "Looking up card",
-            user_id=str(message.author.id),
-            username=message.author.name,
-            card_query=card_query,
-        )
-
-        try:
-            card, used_fallback = await self._resolve_card_query(card_query)
-            await self._send_card_message(
-                message.channel, card, used_fallback, card_query
-            )
-        except Exception as e:
-            self.logger.error(
-                "Card lookup failed",
-                user_id=str(message.author.id),
-                card_query=card_query,
-                error=str(e),
-            )
-            await self._send_error_message(
-                message.channel, self._user_error_message(e, card_query)
-            )
-
-    async def _handle_rules_lookup(
-        self, message: discord.Message, card_query: str
-    ) -> None:
-        """Handle rules lookup for a card."""
-        if not card_query:
-            await self._send_error_message(
-                message.channel, "Card query cannot be empty."
-            )
-            return
-
-        self.logger.info(
-            "Looking up rules for card",
-            user_id=str(message.author.id),
-            username=message.author.name,
-            card_query=card_query,
-        )
-
-        try:
-            # First get the card
-            card, used_fallback = await self._resolve_card_query(card_query)
-
-            # Then get its rulings
-            rulings = await self.scryfall_client.get_card_rulings(card.id)
-
-            if not rulings:
-                embed = discord.Embed(
-                    title="No Rulings Found",
-                    description=(
-                        f"No official rulings found for **{card.get_display_name()}**."
-                    ),
-                    color=0x9B59B6,
-                    url=card.scryfall_uri,
-                )
-                await message.channel.send(embed=embed)
+        created_at = getattr(after, "created_at", None)
+        if created_at is not None:
+            age = (discord.utils.utcnow() - created_at).total_seconds()
+            if age > EDIT_WINDOW:
                 return
 
-            # Create rulings embed
-            embed = discord.Embed(
-                title=f"Rulings for {card.get_display_name()}",
-                url=card.scryfall_uri,
-                color=self._get_rarity_color(card.rarity),
-            )
-
-            if used_fallback:
-                embed.description = f"*Showing closest match for '{card_query}'*"
-
-            # Add rulings as fields (Discord has a limit of 25 fields)
-            ruling_count = min(len(rulings), 10)  # Limit to 10 rulings for readability
-
-            for ruling in rulings[:ruling_count]:
-                source = "Wizards" if ruling.get("source") == "wotc" else "Scryfall"
-                date = ruling.get("published_at", "Unknown date")
-                comment = ruling.get("comment", "No ruling text")
-
-                # Truncate long rulings
-                if len(comment) > 1024:
-                    comment = comment[:1021] + "..."
-
-                embed.add_field(name=f"{source} ({date})", value=comment, inline=False)
-
-            if len(rulings) > ruling_count:
-                embed.set_footer(
-                    text=(
-                        f"Showing {ruling_count} of {len(rulings)} rulings. "
-                        "Visit Scryfall for complete rulings."
-                    )
-                )
-            else:
-                embed.set_footer(text=f"{len(rulings)} ruling(s) found.")
-
-            await message.channel.send(embed=embed)
-
-        except Exception as e:
-            self.logger.error(
-                "Rules lookup failed",
-                user_id=str(message.author.id),
-                card_query=card_query,
-                error=str(e),
-            )
-            await self._send_error_message(
-                message.channel, self._user_error_message(e, card_query)
-            )
-
-    async def _resolve_card_query(self, card_query: str) -> tuple[Card, bool]:
-        """Resolve a single card query into a card with caching and fallbacks."""
-        card_query = card_query.strip()
-        clean_query, order_hint, direction_hint = self._extract_sort_parameters(
-            card_query
+        plan = self._plan_message(after.content)
+        if plan is None or plan.help or plan.usage_error:
+            return
+        previous = self._plan_message(before.content)
+        already = previous.requests if previous else []
+        fresh = [request for request in plan.requests if request not in already]
+        if not fresh:
+            return
+        if not self._allow_user(after.author.id):
+            return
+        self.logger.info(
+            "Handling edited message",
+            user_id=str(after.author.id),
+            new_requests=len(fresh),
         )
-        search_query = clean_query or card_query
-        has_filters = bool(order_hint) or self._has_filter_parameters(search_query)
-        used_fallback = False
+        await self._execute_plan(after, MessagePlan(requests=fresh))
 
-        if has_filters:
-            # Use search API for filtered queries
+    async def _execute_plan(self, message: discord.Message, plan: MessagePlan) -> None:
+        responder = MessageResponder(message)
+        try:
+            if plan.help:
+                self.logger.info("Showing help", user_id=str(message.author.id))
+                await responder.send(
+                    Reply([embeds.help_embed(self.config.command_prefix)])
+                )
+                return
+            if plan.usage_error:
+                await responder.send(Reply([embeds.error_embed(plan.usage_error)]))
+                return
+            self.logger.info(
+                "Looking up cards",
+                user_id=str(message.author.id),
+                username=message.author.name,
+                queries=" ; ".join(f"{r.mode.value}:{r.label}" for r in plan.requests),
+            )
+            async with _typing(message.channel):
+                reply = await self.build_reply(plan.requests, truncated=plan.truncated)
+            await responder.send(reply)
+        except discord.HTTPException as e:
+            self.logger.error("Failed to send reply", status=e.status, error=str(e))
+
+    # -- slash commands --------------------------------------------------------
+
+    def _register_app_commands(self) -> None:
+        bot = self
+
+        async def name_autocomplete(
+            interaction: discord.Interaction, current: str
+        ) -> list[app_commands.Choice[str]]:
             try:
-                card = await self.scryfall_client.search_card_first(
-                    search_query, order_hint, direction_hint
+                names = await asyncio.wait_for(
+                    bot.scryfall_client.autocomplete(current), AUTOCOMPLETE_TIMEOUT
                 )
             except Exception:
-                # If filtered search fails, try to preserve filters by:
-                # 1) Fuzzy-resolve the card name to get the exact name
-                # 2) Re-search with the exact name + original filters
-                card_name = self._extract_card_name(search_query)
-                if not card_name or len(card_name) < 2:
-                    raise
+                return []
+            return [
+                app_commands.Choice(name=name[:100], value=name[:100])
+                for name in names[:25]
+            ]
 
-                fuzzy_card = await self.scryfall_client.get_card_by_name(card_name)
+        def lookup_command(
+            name: str, description: str, mode: LookupMode
+        ) -> app_commands.Command[Any, ..., None]:
+            @app_commands.command(name=name, description=description)
+            @app_commands.describe(
+                card="Card name (typos are fine) or Scryfall syntax like `bolt e:2xm`",
+                set_code="Optional set code for a specific printing, e.g. MH3",
+            )
+            @app_commands.rename(set_code="set")
+            @app_commands.autocomplete(card=name_autocomplete)
+            async def command(
+                interaction: discord.Interaction,
+                card: str,
+                set_code: str | None = None,
+            ) -> None:
+                set_value = set_code.strip().lower() if set_code else None
+                await bot._run_interaction(
+                    interaction, CardRequest(card.strip(), mode, set_value or None)
+                )
 
-                # Try again with exact name quoted + original filters
-                filter_parts = self._extract_filter_parts(search_query)
-                if filter_parts:
-                    exact_query = f'!"{fuzzy_card.name}" {filter_parts}'
-                    try:
-                        card = await self.scryfall_client.search_card_first(
-                            exact_query, order_hint, direction_hint
-                        )
-                        used_fallback = True
-                    except Exception:
-                        # Filters genuinely don't match — return the fuzzy result
-                        card = fuzzy_card
-                        used_fallback = True
-                else:
-                    card = fuzzy_card
-                    used_fallback = True
-        else:
-            # Direct API call for simple name lookups
-            card = await self.scryfall_client.get_card_by_name(search_query)
+            return command
 
-        if not card or not card.is_valid_card():
-            raise errors.create_error(
-                errors.ErrorType.NOT_FOUND, "No card found for query"
+        for command in (
+            lookup_command("card", "Look up a Magic card", LookupMode.CARD),
+            lookup_command("price", "Prices for a Magic card", LookupMode.PRICES),
+            lookup_command("rules", "Official rulings for a card", LookupMode.RULINGS),
+            lookup_command(
+                "legality", "Format legality for a card", LookupMode.LEGALITY
+            ),
+            lookup_command("art", "A card's illustration", LookupMode.ART),
+        ):
+            self.tree.add_command(command)
+
+        @self.tree.command(name="random", description="A random Magic card")
+        @app_commands.describe(
+            query="Optional Scryfall filters, e.g. `t:dragon r:mythic`"
+        )
+        async def random_command(
+            interaction: discord.Interaction, query: str | None = None
+        ) -> None:
+            await bot._run_interaction(
+                interaction, CardRequest((query or "").strip(), random=True)
             )
 
-        return card, used_fallback
+        @self.tree.command(name="help", description="How to use the MTG Card Bot")
+        async def help_command(interaction: discord.Interaction) -> None:
+            await interaction.response.send_message(
+                embed=embeds.help_embed(bot.config.command_prefix), ephemeral=True
+            )
 
-    async def _handle_multi_card_lookup(
-        self, message: discord.Message, raw_content: str
+    async def _run_interaction(
+        self, interaction: discord.Interaction, request: CardRequest
     ) -> None:
-        """Handle a semicolon-separated list of card queries."""
-        # Split on semicolons and trim spaces
-        raw_parts = raw_content.split(";")
-        queries = [q.strip() for q in raw_parts if q.strip()]
-
-        if not queries:
-            await self._send_error_message(
-                message.channel, "No valid card queries provided."
+        if not request.query and not request.random:
+            await interaction.response.send_message(
+                "Please provide a card name.", ephemeral=True
             )
             return
-
-        # If only one query, fallback to normal flow
-        if len(queries) == 1:
-            await self._handle_card_lookup(message, queries[0])
+        if not self._allow_user(interaction.user.id):
+            await interaction.response.send_message(
+                "You're looking up cards very quickly. Try again in a few seconds.",
+                ephemeral=True,
+            )
             return
-
         self.logger.info(
-            "Multi-card lookup",
-            user_id=str(message.author.id),
-            username=message.author.name,
-            query_count=len(queries),
+            "Slash command lookup",
+            user_id=str(interaction.user.id),
+            query=f"{request.mode.value}:{request.label}",
         )
-
-        # Resolve cards concurrently with per-card timeout
-        async def _resolve_one(query: str) -> MultiResolvedCard:
-            try:
-                parts = query.split()
-                command = parts[0].lower() if parts else ""
-                # Handle random commands within multi-card lookups
-                if command in ("random", "rand", "r"):
-                    filter_query = " ".join(parts[1:])
-                    card = await self.scryfall_client.get_random_card(filter_query)
-                    return MultiResolvedCard(query, card)
-                card, used_fallback = await self._resolve_card_query(query)
-                return MultiResolvedCard(query, card, used_fallback)
-            except Exception as e:
-                return MultiResolvedCard(query, error=e)
-
-        async def _resolve_with_timeout(query: str) -> MultiResolvedCard:
-            try:
-                return await asyncio.wait_for(_resolve_one(query), timeout=20.0)
-            except TimeoutError:
-                self.logger.warning("Card resolution timed out", query=query)
-                return MultiResolvedCard(
-                    query, error=TimeoutError(f"Timed out resolving: {query}")
-                )
-
-        resolved_cards = list(
-            await asyncio.gather(*[_resolve_with_timeout(q) for q in queries])
-        )
-
-        # Separate successes from failures
-        valid_cards: list[tuple[MultiResolvedCard, Card]] = []
-        failed_queries: list[str] = []
-
-        for item in resolved_cards:
-            if item.error or not item.card or not item.card.is_valid_card():
-                failed_queries.append(item.query)
-            else:
-                valid_cards.append((item, item.card))
-
-        if not valid_cards:
-            await self._send_error_message(
-                message.channel, "Failed to resolve any requested cards."
-            )
-            return
-
-        # If only one card resolved, use the standard single-card display
-        if len(valid_cards) == 1:
-            item, card = valid_cards[0]
-            await self._send_card_message(
-                message.channel, card, item.used_fallback, item.query
-            )
-            if failed_queries:
-                await self._send_error_message(
-                    message.channel,
-                    "Not found: " + ", ".join(failed_queries),
-                )
-            return
-
-        # Build numbered description with links, set, and price
-        description_lines: list[str] = []
-        for i, (item, card) in enumerate(valid_cards, 1):
-            parts = [f"**{i}.**"]
-
-            # Card name as Scryfall link
-            name = card.get_display_name()
-            if item.used_fallback:
-                name += " *(closest match)*"
-            if card.scryfall_uri:
-                parts.append(f"[{name}]({card.scryfall_uri})")
-            else:
-                parts.append(name)
-
-            # Price only
-            price = card.get_price_display()
-            if price:
-                parts.append(f"· {price}")
-
-            description_lines.append(" ".join(parts))
-
-        # Add failed queries
-        if failed_queries:
-            description_lines.append("")
-            description_lines.append("*Not found: " + ", ".join(failed_queries) + "*")
-
-        embed = discord.Embed(
-            description="\n".join(description_lines),
-            color=0x5865F2,
-        )
+        await interaction.response.defer(thinking=True)
+        responder = InteractionResponder(interaction)
         try:
-            grid_buffer = await compose_card_grid([card for _, card in valid_cards])
+            reply = await self.build_reply([request])
+        except Exception as e:
+            self.logger.error("Slash command lookup failed", error=str(e))
+            reply = Reply([embeds.error_embed("Sorry, something went wrong.")])
+        try:
+            await responder.send(reply)
+        except discord.HTTPException as e:
+            self.logger.error("Failed to answer interaction", error=str(e))
+
+    # -- building replies ------------------------------------------------------
+
+    async def build_reply(
+        self, requests: list[CardRequest], *, truncated: bool = False
+    ) -> Reply:
+        """Resolve requests and turn them into embeds and attachments."""
+        resolutions = await self.resolver.resolve_many(requests)
+
+        # "Ore Gorger,Skyfire Kirin" — a failed single lookup with commas is
+        # usually a list of cards rather than one card name.
+        if len(resolutions) == 1 and resolutions[0].not_found:
+            split = comma_split_requests(resolutions[0].request)
+            if split:
+                split_results = await self.resolver.resolve_many(split)
+                if sum(result.ok for result in split_results) >= 2:
+                    resolutions = split_results
+
+        for resolution in resolutions:
+            if not resolution.ok:
+                self.logger.info(
+                    "Lookup failed",
+                    query=resolution.request.label,
+                    error=str(resolution.error),
+                )
+
+        reply = Reply()
+        card_mode = [r for r in resolutions if r.request.mode is LookupMode.CARD]
+        found_cards = [r for r in card_mode if r.ok]
+        reported: set[int] = set()
+
+        if len(found_cards) >= 2:
+            failed_cards = [r for r in card_mode if not r.ok]
+            reported.update(id(r) for r in failed_cards)
+            await self._add_grid(reply, found_cards, failed_cards)
+        elif len(found_cards) == 1:
+            await self._add_card(reply, found_cards[0], index=1)
+
+        for index, resolution in enumerate(resolutions, 2):
+            if resolution.ok and resolution.request.mode is not LookupMode.CARD:
+                await self._add_mode_embed(reply, resolution, index)
+
+        for resolution in resolutions:
+            if not resolution.ok and id(resolution) not in reported:
+                reply.embeds.append(embeds.error_embed(embeds.failure_text(resolution)))
+
+        if truncated:
+            reply.embeds.append(
+                embeds.error_embed(
+                    f"Only the first {MAX_CARDS_PER_MESSAGE} cards were looked up."
+                )
+            )
+        reply.embeds = reply.embeds[:MAX_EMBEDS_PER_MESSAGE]
+        return reply
+
+    async def _add_grid(
+        self, reply: Reply, found: list[Resolution], failed: list[Resolution]
+    ) -> None:
+        embed = embeds.multi_embed(found, failed)
+        cards = [r.card for r in found if r.card is not None]
+        try:
+            buffer = await compose_card_grid(cards)
         except Exception as e:
             self.logger.warning("Grid composition failed", error=str(e))
-            await message.channel.send(embed=embed)
-            return
+        else:
+            reply.files.append(discord.File(buffer, filename=GRID_FILENAME))
+            embed.set_image(url=f"attachment://{GRID_FILENAME}")
+        reply.embeds.append(embed)
 
-        embed.set_image(url="attachment://cards.png")
-
-        file = discord.File(grid_buffer, filename="cards.png")
-        await message.channel.send(embed=embed, file=file)
-
-    def _has_filter_parameters(self, query: str) -> bool:
-        """Check if the query contains Scryfall filter syntax."""
-        essential_filters = [
-            "e:",
-            "s:",
-            "set:",
-            "frame:",
-            "border:",
-            "is:",
-            "rarity:",
-            "r:",
-            "cn:",
-            "number:",
-            "c:",
-            "color:",
-            "id:",
-            "t:",
-            "type:",
-            "o:",
-            "oracle:",
-            "pow:",
-            "tou:",
-            "cmc:",
-            "mv:",
-            "f:",
-            "format:",
-        ]
-
-        lower_query = query.lower()
-        return any(filter_param in lower_query for filter_param in essential_filters)
-
-    def _extract_sort_parameters(
-        self, query: str
-    ) -> tuple[str, str | None, str | None]:
-        """Extract order/dir hints from the query and return the cleaned query."""
-        tokens = query.split()
-        order: str | None = None
-        direction: str | None = None
-        remaining_tokens: list[str] = []
-
-        for token in tokens:
-            lower_token = token.lower()
-            if lower_token.startswith(("order:", "sort:")):
-                value = token.split(":", 1)[1].strip().strip("()[]{}.,;'\"")
-                if value:
-                    order = value.lower()
-                continue
-            if lower_token.startswith(("dir:", "direction:")):
-                value = token.split(":", 1)[1].strip().strip("()[]{}.,;'\"")
-                value_lower = value.lower()
-                if value_lower in {"asc", "desc", "auto"}:
-                    direction = value_lower
-                continue
-            remaining_tokens.append(token)
-
-        cleaned_query = " ".join(remaining_tokens).strip()
-        return cleaned_query, order, direction
-
-    def _extract_card_name(self, query: str) -> str:
-        """Extract the card name from a filtered query for fallback purposes."""
-        words = query.split()
-        card_name_parts = []
-
-        for word in words:
-            lower_word = word.lower()
-
-            # Skip known filter patterns with colons
-            if ":" in lower_word:
-                continue
-
-            # Skip standalone filter keywords
-            essential_keywords = [
-                "foil",
-                "nonfoil",
-                "fullart",
-                "textless",
-                "borderless",
-            ]
-            if lower_word not in essential_keywords:
-                card_name_parts.append(word)
-
-        return " ".join(card_name_parts).strip()
-
-    def _extract_filter_parts(self, query: str) -> str:
-        """Extract Scryfall filter tokens (for example, ``is:borderless e:one``)."""
-        words = query.split()
-        filter_parts = []
-
-        for word in words:
-            lower_word = word.lower()
-            if ":" in lower_word:
-                filter_parts.append(word)
-
-        return " ".join(filter_parts)
-
-    async def _send_card_message(
-        self,
-        channel: discord.abc.Messageable,
-        card: Card,
-        used_fallback: bool,
-        original_query: str,
-    ) -> None:
-        """Send a card image and details to a Discord channel."""
-        if not card.is_valid_card():
-            await self._send_error_message(
-                channel, "Received invalid card data from API."
-            )
-            return
-
-        if not card.has_image():
-            # Send text-only message if no image is available
-            embed = discord.Embed(
-                title=card.get_display_name(),
-                description=f"**{card.type_line}**\n{card.oracle_text}",
-                color=0x9B59B6,
-                url=card.scryfall_uri,
-            )
-
-            embed.add_field(
-                name="Set",
-                value=f"{card.set_name} ({card.set_code.upper()})",
-                inline=True,
-            )
-
-            embed.add_field(name="Rarity", value=card.rarity.title(), inline=True)
-
-            # Add mana cost and pricing if available
-            if card.mana_cost:
-                mana_cost_text = card.mana_cost
-                price_display = card.get_price_display()
-                if price_display:
-                    mana_cost_text += f" - {price_display}"
-                embed.add_field(name="Mana Cost", value=mana_cost_text, inline=True)
-
-            # Add format legality
-            legality_text = card.get_format_legalities()
-            if legality_text:
-                embed.add_field(name="Legal in", value=legality_text, inline=False)
-
-            if card.artist:
-                embed.add_field(name="Artist", value=card.artist, inline=True)
-
-            await channel.send(embed=embed)
-            return
-
-        # Create rich embed with card image
-        embed = discord.Embed(
-            title=card.get_display_name(),
-            url=card.scryfall_uri,
-            color=self._get_rarity_color(card.rarity),
-        )
-
-        embed.set_image(url=card.get_best_image_url())
-
-        # Add mana cost and fallback notification
-        descriptions = []
-
-        if used_fallback:
-            descriptions.append(
-                "*No exact match found for filters in "
-                f"`{original_query}`, showing closest match*"
-            )
-        elif (
-            original_query
-            and original_query != "random"
-            and self._has_filter_parameters(original_query)
-        ):
-            descriptions.append(f"*Filtered result for: `{original_query}`*")
-
-        if card.mana_cost:
-            mana_cost_text = f"**Mana Cost:** {card.mana_cost}"
-            price_display = card.get_price_display()
-            if price_display:
-                mana_cost_text += f" - **Cost:** {price_display}"
-            descriptions.append(mana_cost_text)
-
-        if descriptions:
-            embed.description = "\n".join(descriptions)
-
-        # Add format legality field
-        legality_text = card.get_format_legalities()
-        if legality_text:
-            embed.add_field(name="Legal in", value=legality_text, inline=False)
-
-        # Footer with set, rarity, and artist
-        footer_parts = [card.set_name, card.rarity.title()]
-        if card.artist:
-            footer_parts.append(f"Art by {card.artist}")
-
-        embed.set_footer(text=" • ".join(footer_parts))
-
-        await channel.send(embed=embed)
-
-    def _user_error_message(
-        self, exc: Exception, query: str, context: str = "lookup"
-    ) -> str:
-        """Return a user-friendly error message based on exception type."""
-        if isinstance(exc, errors.MTGError):
-            if exc.error_type == errors.ErrorType.NOT_FOUND:
-                if context == "random" and query:
-                    return (
-                        f"No cards found matching filters: '{query}'. "
-                        "Try broader criteria."
-                    )
-                if context == "random":
-                    return (
-                        "Scryfall API couldn't return a random card right now. "
-                        "Please try again in a moment."
-                    )
-                if self._has_filter_parameters(query):
-                    return (
-                        f"No cards found for '{query}'. Try simpler "
-                        "filters like `e:set` or `is:foil`, or check the spelling."
-                    )
-                return (
-                    f"Card '{query}' not found. Try partial names "
-                    "like 'bolt' for 'Lightning Bolt'."
-                )
-            if exc.error_type == errors.ErrorType.RATE_LIMIT:
-                return "API rate limit exceeded. Please try again in a moment."
-            if exc.error_type == errors.ErrorType.NETWORK:
-                return "Could not reach the Scryfall API. Please try again in a moment."
-            if exc.error_type == errors.ErrorType.API:
-                return (
-                    "The Scryfall API is temporarily unavailable. "
-                    "Please try again in a moment."
-                )
-        return "Sorry, something went wrong. Please try again."
-
-    def _get_rarity_color(self, rarity: str) -> int:
-        """Return a color based on card rarity."""
-        rarity_colors = {
-            "mythic": 0xFF8C00,  # Dark orange
-            "rare": 0xFFD700,  # Gold
-            "uncommon": 0xC0C0C0,  # Silver
-            "common": 0x000000,  # Black
-            "special": 0xFF1493,  # Deep pink
-            "bonus": 0x9370DB,  # Medium purple
-        }
-        return rarity_colors.get(rarity.lower(), 0x9B59B6)  # Default purple
-
-    async def _handle_help(self, message: discord.Message) -> None:
-        """Handle the help command."""
-        self.logger.info(
-            "Showing help information",
-            user_id=str(message.author.id),
-            username=message.author.name,
-        )
-
-        prefix = self.config.command_prefix
-        embed = discord.Embed(
-            title="MTG Card Bot",
-            description=(
-                "**Fast Discord lookups with live pricing, legality, and rich embeds**"
-            ),
-            color=0x5865F2,
-        )
-
-        embed.add_field(
-            name="Essential Commands",
-            value=(
-                f"`{prefix}lightning bolt` • single-card lookup\n"
-                f"`[[Lightning Bolt]]` • bracket style lookup\n"
-                f"`{prefix}rules counterspell` • official rulings\n"
-                f"`{prefix}random` • pull a random card (supports filters)"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="Filtering & Sorting",
-            value=(
-                "Mix Scryfall syntax directly in the query.\n"
-                "• Sets: `e:mh3`, `s:ltr`\n"
-                "• Showcase/foils: `is:showcase is:foil`\n"
-                "• Sort results: `order:edhrec`, `order:usd dir:desc`\n"
-                f"• Example: `{prefix}cultivate order:edhrec dir:desc`"
-            ),
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Multiple Cards",
-            value=(
-                "Use brackets or semicolon-separated lookups.\n"
-                "`[[Lightning Bolt]] [[Counterspell]]`\n"
-                f"`{prefix}bolt; counterspell; doom blade`\n"
-                f"`{prefix}sol ring e:lea; mox ruby e:lea`"
-            ),
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Power Tips",
-            value=(
-                "• Fuzzy match typos: `ragav` ⇒ Ragavan\n"
-                "• Rate limiting keeps chats friendly\n"
-                "• Search pools pick varied prints unless you sort\n"
-                f"• Aliases: `{prefix}r`, `{prefix}rand`, `{prefix}h`, `{prefix}?`"
-            ),
-            inline=False,
-        )
-
-        embed.set_footer(
-            text="Powered by Scryfall API • github.com/dunamismax/mtg-card-bot"
-        )
-
-        await message.channel.send(embed=embed)
-
-    async def _send_error_message(
-        self, channel: discord.abc.Messageable, message: str
-    ) -> None:
-        """Send an error message to a Discord channel."""
-        embed = discord.Embed(title="Error", description=message, color=0xE74C3C)
-
+    async def _card_visual(
+        self, card: Card, index: int
+    ) -> tuple[str | None, discord.File | None, str | None]:
+        """Image URL or attachment for a card, combining both faces of a DFC."""
+        faces = card.get_face_image_urls()
+        if len(faces) < 2:
+            return None, None, None
         try:
-            await channel.send(embed=embed)
+            buffer = await compose_card_faces(card)
         except Exception as e:
-            self.logger.error("Failed to send error message", error=str(e))
+            self.logger.warning("Face composition failed", error=str(e))
+            return faces[0], None, faces[1]
+        filename = f"card-{index}.jpg"
+        return f"attachment://{filename}", discord.File(buffer, filename=filename), None
+
+    async def _add_card(self, reply: Reply, resolution: Resolution, index: int) -> None:
+        card = resolution.card
+        assert card is not None
+        image_url, file, back_face = await self._card_visual(card, index)
+        if file is not None:
+            reply.files.append(file)
+        reply.embeds.append(
+            embeds.card_embed(
+                card,
+                note=resolution.note,
+                query=resolution.request.query,
+                image_url=image_url,
+                back_face_url=back_face,
+            )
+        )
+
+    async def _add_mode_embed(
+        self, reply: Reply, resolution: Resolution, index: int
+    ) -> None:
+        card = resolution.card
+        assert card is not None
+        mode = resolution.request.mode
+        note = resolution.note
+        try:
+            if mode is LookupMode.IMAGE:
+                image_url, file, back_face = await self._card_visual(card, index)
+                if file is not None:
+                    reply.files.append(file)
+                reply.embeds.append(
+                    embeds.image_embed(
+                        card, note=note, image_url=image_url, back_face_url=back_face
+                    )
+                )
+            elif mode is LookupMode.PRICES:
+                cheapest = await self.resolver.cheapest_printing(card)
+                reply.embeds.append(
+                    embeds.prices_embed(card, cheapest=cheapest, note=note)
+                )
+            elif mode is LookupMode.RULINGS:
+                rulings = await self.scryfall_client.get_card_rulings(card.id)
+                reply.embeds.append(embeds.rulings_embed(card, rulings, note=note))
+            elif mode is LookupMode.LEGALITY:
+                reply.embeds.append(embeds.legality_embed(card, note=note))
+            elif mode is LookupMode.ART:
+                reply.embeds.append(embeds.art_embed(card, note=note))
+        except Exception as e:
+            self.logger.warning(
+                "Lookup detail failed", mode=mode.value, card=card.name, error=str(e)
+            )
+            failed = Resolution(resolution.request, error=e)
+            reply.embeds.append(embeds.error_embed(embeds.failure_text(failed)))
+
+    # -- housekeeping ----------------------------------------------------------
 
     async def _cleanup_duplicates_periodically(self) -> None:
-        """Background task to clean up old duplicate suppression data."""
+        """Background task to forget old duplicate and rate limit state."""
         while True:
             try:
-                await asyncio.sleep(60)  # Clean up every minute
-                now = time.time()
-                cutoff = now - 300  # Keep data for 5 minutes
-
-                # Clean up old command timestamps
-                old_keys = [
-                    key
-                    for key, timestamp in self._recent_commands.items()
-                    if timestamp < cutoff
-                ]
-                for key in old_keys:
-                    del self._recent_commands[key]
-
-                # Clean up old rate limit timestamps (keep for 5 minutes)
-                old_rate_limit_users = [
-                    user_id
-                    for user_id, timestamp in self._user_rate_limits.items()
-                    if timestamp < cutoff
-                ]
-                for user_id in old_rate_limit_users:
-                    del self._user_rate_limits[user_id]
-
-                # Clean up old message IDs (keep last 1000)
-                if len(self._processed_message_ids) > 1000:
-                    # Convert to list, sort, and keep newest 500
-                    sorted_ids = sorted(self._processed_message_ids)
-                    self._processed_message_ids = set(sorted_ids[-500:])
-
-                if old_keys or len(self._processed_message_ids) > 1000:
-                    self.logger.debug(
-                        "Cleaned up duplicate suppression data",
-                        commands_removed=len(old_keys),
-                        message_ids_kept=len(self._processed_message_ids),
-                    )
-
+                await asyncio.sleep(60)
+                self._prune_state(time.monotonic())
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 self.logger.error("Error in duplicate cleanup task", error=str(e))
 
-    async def close(self) -> None:
-        """Clean shutdown of the bot."""
-        self.logger.info("Shutting down MTG Card bot")
+    def _prune_state(self, now: float) -> None:
+        cutoff = now - 300
+        self._recent_commands = {
+            key: ts for key, ts in self._recent_commands.items() if ts >= cutoff
+        }
+        self._processed_message_ids = {
+            key: ts for key, ts in self._processed_message_ids.items() if ts >= cutoff
+        }
+        refill = max(self.config.command_cooldown, 0) * max(
+            1, self.config.command_burst
+        )
+        self._rate_buckets = {
+            user: state
+            for user, state in self._rate_buckets.items()
+            if now - state[1] < refill
+        }
 
-        # Cancel cleanup task
-        if self._cleanup_task and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._cleanup_task
 
-        # Close HTTP clients
+@asynccontextmanager
+async def _typing(channel: Any) -> AsyncIterator[None]:
+    """Show "Bot is typing…" while working, ignoring missing permissions."""
+    typing: Callable[[], Any] | None = getattr(channel, "typing", None)
+    context = None
+    if typing is not None:
         try:
-            await self.scryfall_client.close()
-        except Exception as e:
-            self.logger.warning("Error closing scryfall client", error=str(e))
-
-        # Clear duplicate suppression data
-        self._recent_commands.clear()
-        self._processed_message_ids.clear()
-        self._user_rate_limits.clear()
-
-        await super().close()
+            context = typing()
+            await context.__aenter__()
+        except Exception:
+            context = None
+    try:
+        yield
+    finally:
+        if context is not None:
+            with suppress(Exception):
+                await context.__aexit__(None, None, None)

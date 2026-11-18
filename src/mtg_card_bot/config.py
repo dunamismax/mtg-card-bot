@@ -75,7 +75,13 @@ class MTGConfig:
             "MTG_JSON_LOGGING", get_bool("JSON_LOGGING", False)
         )
         self.debug_mode = get_bool("DEBUG", False)
+        # Sustained rate: one lookup per cooldown seconds, with short bursts
+        # of up to command_burst lookups allowed.
         self.command_cooldown = get_float("MTG_COMMAND_COOLDOWN", 2.0)
+        self.command_burst = get_int("MTG_COMMAND_BURST", 3)
+        # Scryfall refreshes card data and prices once a day.
+        self.cache_ttl = get_float("MTG_CACHE_TTL", 6 * 60 * 60)
+        self.sync_commands = get_bool("MTG_SYNC_COMMANDS", True)
 
     def validate_config(self) -> None:
         """Validate the configuration after loading."""
@@ -84,6 +90,15 @@ class MTGConfig:
 
         if not self.bot_name:
             raise ValueError("bot_name is required")
+
+        if self.command_cooldown < 0:
+            raise ValueError("MTG_COMMAND_COOLDOWN must be zero or positive")
+
+        if self.command_burst < 1:
+            raise ValueError("MTG_COMMAND_BURST must be at least 1")
+
+        if self.cache_ttl < 0:
+            raise ValueError("MTG_CACHE_TTL must be zero or positive")
 
         valid_levels = {"debug", "info", "warn", "warning", "error"}
         if self.log_level not in valid_levels:
