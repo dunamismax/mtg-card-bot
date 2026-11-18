@@ -80,7 +80,8 @@ Set environment variables in `.env` or in the process environment:
 
 - Any Scryfall search filter works, including `e:who`, `type:legendary`, and `mana>={5}`
 - Use `order:` and `dir:` for ranked results like `order:usd dir:desc`
-- Separate multiple lookups with semicolons: `!bolt; counterspell; doom blade`
+- Put several bracket lookups in one message (`[[Lightning Bolt]] [[Counterspell]]`)
+  or separate prefix lookups with semicolons (`!bolt; counterspell; doom blade`).
 - Aliases: `!r`, `!rand`, `!h`, and `!?`
 
 ## Development
@@ -115,8 +116,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and repo con
 
 ## Deployment Notes
 
-- `systemd`: run from the repo root after `uv sync`, either via `uv run mtg-card-bot` or `uv run python manage_bot.py start`
-- Container builds: install `uv`, copy the repo, run `uv sync --frozen`, then start the package entrypoint
+The [Ubuntu VM runbook](deploy/README.md) covers pinned releases, verification
+and rollback for `mtg-card-bot.service`. For a container build, install `uv`,
+copy the repo, run `uv sync --locked`, and start the package entrypoint.
 
 ## License
 

@@ -99,16 +99,28 @@ def test_extract_sort_parameters_strips_sort_tokens(bot: MTGCardBot) -> None:
     assert direction == "desc"
 
 
-async def test_on_message_routes_bracket_lookup(
+async def test_bracket_message_sends_card_embed(
     bot: MTGCardBot, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    lookup = AsyncMock()
-    monkeypatch.setattr(bot, "_handle_card_lookup", lookup)
-    message = FakeMessage("Could you grab [[Lightning Bolt]] for me?", message_id=101)
+    card = make_card()
+    lookup = AsyncMock(return_value=card)
+    monkeypatch.setattr(bot.scryfall_client, "get_card_by_name", lookup)
+    channel = FakeChannel()
+    message = FakeMessage(
+        "Could you grab [[Lightning Bolt]] for me?", message_id=101, channel=channel
+    )
 
     await bot.on_message(cast(Any, message))
 
-    lookup.assert_awaited_once_with(message, "Lightning Bolt")
+    lookup.assert_awaited_once_with("Lightning Bolt")
+    sent = channel.sent_messages
+    assert len(sent) == 1
+    embed = sent[0]["embed"]
+    assert embed.title == "Lightning Bolt"
+    assert embed.url == card.scryfall_uri
+    assert embed.description == "**Mana Cost:** {R} - **Cost:** $1.25"
+    assert embed.image.url == card.get_best_image_url()
+    assert _field_map(embed)["Legal in"] == "Modern, Commander"
 
 
 async def test_on_message_routes_random_alias_with_filters(
@@ -207,8 +219,16 @@ async def test_send_card_message_with_image_includes_filter_context(
     assert embed.footer.text == "Limited Edition Alpha • Rare • Art by Christopher Rush"
 
 
-async def test_multi_card_sends_grid_embed_with_file(
-    bot: MTGCardBot, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "text, grid_available",
+    [
+        ("!bolt; counterspell; nope", True),
+        ("Compare [[Bolt]] with [[Counterspell]] and [[nope]].", True),
+        ("Compare [[Bolt]] with [[Counterspell]] and [[nope]].", False),
+    ],
+)
+async def test_multi_card_sends_results(
+    bot: MTGCardBot, monkeypatch: pytest.MonkeyPatch, text: str, grid_available: bool
 ) -> None:
     bolt = make_card()
     counterspell = make_card(
@@ -221,9 +241,9 @@ async def test_multi_card_sends_grid_embed_with_file(
     )
 
     async def fake_resolve(query: str) -> tuple[Card, bool]:
-        if "bolt" in query:
+        if query.casefold() == "bolt":
             return bolt, False
-        if "counterspell" in query:
+        if query.casefold() == "counterspell":
             return counterspell, True
         raise create_error(ErrorType.NOT_FOUND, "missing")
 
@@ -232,23 +252,21 @@ async def test_multi_card_sends_grid_embed_with_file(
     import io
 
     fake_buffer = io.BytesIO(b"fake-png-data")
-    compose = AsyncMock(return_value=fake_buffer)
+    compose = AsyncMock(
+        return_value=fake_buffer,
+        side_effect=None if grid_available else RuntimeError("No card images"),
+    )
     monkeypatch.setattr("mtg_card_bot.bot.compose_card_grid", compose)
 
     channel = FakeChannel()
-    message = FakeMessage("!bolt; counterspell; nope", message_id=200, channel=channel)
+    message = FakeMessage(text, message_id=200, channel=channel)
 
     await bot.on_message(cast(Any, message))
 
     compose.assert_awaited_once_with([bolt, counterspell])
 
-    # Should send one message with embed + file
     assert len(channel.sent_messages) == 1
     msg = channel.sent_messages[0]
-
-    # Has a file attachment
-    assert msg["file"] is not None
-    assert msg["file"].filename == "cards.png"
 
     # Embed has numbered card list with links and prices
     embed = msg["embed"]
@@ -262,5 +280,9 @@ async def test_multi_card_sends_grid_embed_with_file(
     # Failed lookups mentioned
     assert "nope" in desc.lower()
 
-    # Grid image attached
-    assert embed.image.url == "attachment://cards.png"
+    if grid_available:
+        assert msg["file"].filename == "cards.png"
+        assert embed.image.url == "attachment://cards.png"
+    else:
+        assert msg["file"] is None
+        assert embed.image.url is None

@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 022
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+base=/opt/mtg-card-bot
+repo=/home/sawyer/github/mtg-card-bot
+uv=/home/sawyer/.local/bin/uv
+python_version=3.13.17
+uv_version=0.13.5
+python="$base/python/$python_version/bin/python3.13"
+unit=mtg-card-bot.service
+dropin="/etc/systemd/system/$unit.d/60-release.conf"
+service_user=mtg-card-bot
+lock=/run/astro-deploy/lock
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+is_revision() { [[ $1 =~ ^[0-9a-f]{40}$ ]]; }
+
+as_builder() {
+    runuser -u sawyer -- env -i HOME=/home/sawyer PATH="$PATH" PYTHONDONTWRITEBYTECODE=1 "$@"
+}
+
+check_import() {
+    local release=$1
+    runuser -u "$service_user" -- env -i PATH="$PATH" PYTHONPATH="$release/src" \
+        "$release/.venv/bin/python" -BP -c '
+import pathlib, sys
+import discord, httpx, PIL, mtg_card_bot
+
+release = pathlib.Path(sys.argv[1])
+assert pathlib.Path(mtg_card_bot.__file__).resolve().is_relative_to(release / "src")
+assert ".".join(map(str, sys.version_info[:3])) == sys.argv[2]
+' "$release" "$(cat "$release/.python-runtime")"
+}
+
+prepare() {
+    local revision=$1 release="$base/releases/$1" interpreter version
+    is_revision "$revision" || die "Use a full Git commit SHA."
+    [[ $(as_builder git -C "$repo" cat-file -t "$revision") == commit ]] ||
+        die "Commit $revision is unavailable. Fetch main as sawyer first."
+
+    install -d "$base" "$base/releases" "$base/python"
+    exec 8>/run/lock/mtg-card-bot-prepare.lock
+    flock -x 8
+    if [[ -e $release ]]; then
+        [[ $(cat "$release/.revision") == "$revision" ]] || die "Invalid release: $release"
+        check_import "$release"
+        printf 'Already prepared %s\n' "$revision"
+        return
+    fi
+
+    version=$(as_builder "$uv" --version)
+    [[ $version == "uv $uv_version" || $version == "uv $uv_version "* ]] ||
+        die "Expected uv $uv_version, found $version"
+    stage=$(mktemp -d "$base/.prepare.XXXXXXXX")
+    trap 'rm -rf -- "$stage"' EXIT
+
+    if [[ ! -x $python ]]; then
+        interpreter=$(as_builder "$uv" python find --managed-python --no-python-downloads \
+            "$python_version")
+        interpreter=$(readlink -f "$interpreter")
+        mkdir "$stage/python"
+        cp -a -- "$(dirname "$(dirname "$interpreter")")/." "$stage/python/"
+        chown -hR root:root "$stage/python"
+        chmod -R a+rX,a-w "$stage/python"
+        [[ $("$stage/python/bin/python3.13" --version) == "Python $python_version" ]] ||
+            die "Copied Python does not match $python_version."
+        mv -T -- "$stage/python" "$base/python/$python_version"
+    fi
+
+    chmod 0755 "$stage"
+    install -d -o sawyer -g sawyer "$stage/release"
+    as_builder git -C "$repo" archive "$revision" |
+        as_builder tar -x -C "$stage/release"
+    (
+        cd "$stage/release"
+        as_builder "$uv" venv --relocatable --python "$python" --no-python-downloads
+        sync_args=(sync --locked --no-install-project --no-build --link-mode copy
+                   --python "$python" --no-python-downloads)
+        as_builder "$uv" "${sync_args[@]}"
+        as_builder "$uv" run --no-sync ruff check .
+        as_builder "$uv" run --no-sync ruff format --check .
+        as_builder "$uv" run --no-sync pyright
+        as_builder "$uv" run --no-sync pytest
+        as_builder "$uv" "${sync_args[@]}" --no-dev
+        as_builder rm -rf -- .coverage .pytest_cache .ruff_cache
+    )
+    printf '%s\n' "$revision" >"$stage/release/.revision"
+    printf '%s\n' "$python_version" >"$stage/release/.python-runtime"
+    chown -hR root:root "$stage/release"
+    chmod -R a-w "$stage/release"
+    mv -T -- "$stage/release" "$release"
+    if ! check_import "$release"; then
+        mv -T -- "$release" "$stage/release"
+        die "Release import failed after publication."
+    fi
+    printf 'Prepared %s\n' "$revision"
+}
+
+release_dropin() {
+    printf '# Release: %s\n' "$1"
+    cat <<'CONF'
+[Service]
+Environment=PYTHONPATH=/opt/mtg-card-bot/current/src
+ExecStart=
+ExecStart=/opt/mtg-card-bot/current/.venv/bin/python -BP -m mtg_card_bot
+CONF
+}
+
+check_selection() {
+    local revision=$1
+    if [[ $revision == legacy ]]; then
+        [[ -x $repo/.venv/bin/python ]] || die "Legacy interpreter missing."
+    else
+        is_revision "$revision" || die "Invalid release: $revision"
+        [[ $(cat "$base/releases/$revision/.revision") == "$revision" ]] ||
+            die "Prepare $revision before activation."
+        check_import "$base/releases/$revision" || die "Cannot import release $revision."
+    fi
+}
+
+select_release() {
+    local revision=$1
+    if [[ $revision == legacy ]]; then
+        rm -f -- "$dropin" "$base/current" || return
+    else
+        ln -sfn "releases/$revision" "$transaction/current" || return
+        mv -Tf -- "$transaction/current" "$base/current" || return
+        release_dropin "$revision" >"$transaction/60-release.conf" || return
+        install -m 0644 "$transaction/60-release.conf" "$dropin" || return
+    fi
+    systemd-analyze verify "/etc/systemd/system/$unit" || return
+    systemctl daemon-reload && check_service_identity
+}
+
+check_service_identity() {
+    [[ $(systemctl show "$unit" -p User --value) == "$service_user" &&
+        $(systemctl show "$unit" -p Group --value) == "$service_user" &&
+        $(systemctl show "$unit" -p KillMode --value) == control-group ]]
+}
+
+stop_bot() {
+    local cgroup
+    cgroup=$(systemctl show "$unit" -p ControlGroup --value) || return
+    systemctl stop "$unit" || return
+    [[ $(systemctl show "$unit" -p MainPID --value) == 0 ]] || return 1
+    local events="/sys/fs/cgroup$cgroup/cgroup.events"
+    [[ -z $cgroup || ! -r $events ]] || grep -Fxq 'populated 0' "$events"
+}
+
+wait_ready() {
+    local invocation pid state second actual expected_python="$base/current/.venv/bin/python"
+    if [[ $1 == legacy ]]; then
+        expected_python="$repo/.venv/bin/python"
+    fi
+    invocation=$(systemctl show "$unit" -p InvocationID --value) || return
+    pid=$(systemctl show "$unit" -p MainPID --value) || return
+    [[ -n $invocation && $pid != 0 ]] || return 1
+
+    for ((second = 0; second < 45; ++second)); do
+        systemctl is-active --quiet "$unit" || return 1
+        [[ $(systemctl show "$unit" -p MainPID --value) == "$pid" ]] || return 1
+        state=$(journalctl "_SYSTEMD_INVOCATION_ID=$invocation" --no-pager -o cat |
+            awk '/Bot is ready|Bot (disconnected from|resumed) Discord gateway/ {line=$0}
+                 END {print line}')
+        if [[ $state == *"Bot is ready"* || $state == *"Bot resumed Discord gateway"* ]]; then
+            IFS= read -r -d '' actual <"/proc/$pid/cmdline" || return
+            [[ $actual == "$expected_python" ]] || return 1
+            printf 'Discord gateway ready (PID %s)\n' "$pid"
+            return
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+restore_on_failure() {
+    local status=$?
+    trap - EXIT
+    if ((status != 0)); then
+        printf 'Activation failed. Restoring %s.\n' "$old" >&2
+        if stop_bot && select_release "$old" &&
+            { [[ $was_running == no ]] || { systemctl start "$unit" && wait_ready "$old"; }; }; then
+            printf 'Restored %s\n' "$old" >&2
+        else
+            printf 'Automatic recovery failed. Check %s before starting the bot.\n' "$unit" >&2
+        fi
+    fi
+    rm -rf -- "$transaction"
+    exit "$status"
+}
+
+activate() {
+    local revision=$1 expected=$2 link transaction old=legacy was_running=no
+    if [[ -L $base/current ]]; then
+        link=$(readlink "$base/current")
+        old=${link#releases/}
+        is_revision "$old" && [[ $link == "releases/$old" ]] ||
+            die "Unexpected current link: $link"
+        cmp -s "$dropin" <(release_dropin "$old") || die "Release drop-in has drifted."
+    elif [[ -e $base/current || -e $dropin || -L $dropin ]]; then
+        die "Release link and drop-in do not agree."
+    fi
+    [[ $old == "$expected" ]] || die "Expected $expected, found $old."
+    check_selection "$old"
+    check_selection "$revision"
+    check_service_identity || die "Unexpected systemd service identity or KillMode."
+
+    if systemctl is-active --quiet "$unit"; then
+        was_running=yes
+        if [[ $old == "$revision" ]]; then
+            wait_ready "$revision"
+            return
+        fi
+    fi
+    transaction=$(mktemp -d "$base/.activate.XXXXXXXX")
+    # Bash's EXIT trap outlives the function scope. Run the transaction in a subshell.
+    (
+        trap restore_on_failure EXIT
+        trap 'exit 1' HUP INT TERM
+        stop_bot || die "Previous process did not stop."
+        select_release "$revision"
+        systemctl start "$unit"
+        wait_ready "$revision" || die "New invocation did not reach Discord readiness."
+        printf 'Active %s (previous %s)\n' "$revision" "$old"
+    )
+}
+
+[[ $EUID == 0 ]] || die "Run as root."
+case "${1:-}" in
+    prepare)
+        [[ $# == 2 ]] || die "Usage: $0 prepare FULL_SHA"
+        prepare "$2"
+        ;;
+    activate)
+        [[ $# == 3 ]] || die "Usage: $0 activate FULL_SHA|legacy EXPECTED_SHA|legacy"
+        if [[ $(readlink "/proc/$$/fd/9" 2>/dev/null || true) != "$lock" ]]; then
+            exec /usr/local/sbin/with-deploy-lock "$(realpath -- "$0")" "$@"
+        fi
+        activate "$2" "$3"
+        ;;
+    *) die "Usage: $0 {prepare FULL_SHA | activate RELEASE EXPECTED_CURRENT}" ;;
+esac

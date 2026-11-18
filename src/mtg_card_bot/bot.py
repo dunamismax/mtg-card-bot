@@ -104,46 +104,21 @@ class MTGCardBot(discord.Client):
 
     async def on_message(self, message: discord.Message) -> None:
         """Handle incoming messages."""
-        # Ignore messages from bots
-        if message.author.bot:
-            return
-
-        # Diagnostic: log every non-bot message received (debug level)
-        guild = getattr(message, "guild", None)
-        guild_name = getattr(guild, "name", "DM") if guild else "DM"
-        channel = getattr(message, "channel", None)
-        channel_name = getattr(channel, "name", "unknown") if channel else "unknown"
-        self.logger.debug(
-            "Message received",
-            author=message.author.name,
-            guild=str(guild_name),
-            channel=str(channel_name),
-            content_length=len(message.content),
-            content_preview=message.content[:80] if message.content else "<EMPTY>",
-        )
-
-        # Warn if message content is empty — likely means MESSAGE_CONTENT
-        # privileged intent is not enabled in the Discord Developer Portal
-        if not message.content:
-            self.logger.warning(
-                "Received message with empty content — the MESSAGE_CONTENT "
-                "privileged intent may not be enabled in the Discord Developer "
-                "Portal (https://discord.com/developers/applications)",
-                author=message.author.name,
-                guild=str(guild_name),
-            )
+        if message.author.bot or not message.content:
             return
 
         # If we've already processed this message (duplicate delivery), skip
         if message.id in self._processed_message_ids:
             return
 
-        # Check for bracket syntax [[card name]] or prefix command
-        bracket_match = self._extract_bracket_content(message.content)
-        if bracket_match:
-            content = bracket_match
+        bracket_queries = [
+            match.strip()
+            for match in re.findall(r"\[\[([^\[\]]+)\]\]", message.content)
+            if match.strip()
+        ]
+        if bracket_queries:
+            content = "; ".join(bracket_queries)
         elif message.content.startswith(self.config.command_prefix):
-            # Remove prefix
             content = message.content[len(self.config.command_prefix) :]
         else:
             return
@@ -189,6 +164,10 @@ class MTGCardBot(discord.Client):
 
         parts = content.split()
         if not parts:
+            return
+
+        if bracket_queries:
+            await self._handle_card_lookup(message, " ".join(parts))
             return
 
         command = parts[0].lower()
@@ -503,18 +482,6 @@ class MTGCardBot(discord.Client):
                 )
             return
 
-        # Build the composite grid image
-        cards_for_grid = [card for _, card in valid_cards]
-        try:
-            grid_buffer = await compose_card_grid(cards_for_grid)
-        except Exception as e:
-            self.logger.error("Grid composition failed", error=str(e))
-            await self._send_error_message(
-                message.channel,
-                "Failed to compose card grid. Please try again.",
-            )
-            return
-
         # Build numbered description with links, set, and price
         description_lines: list[str] = []
         for i, (item, card) in enumerate(valid_cards, 1):
@@ -545,6 +512,13 @@ class MTGCardBot(discord.Client):
             description="\n".join(description_lines),
             color=0x5865F2,
         )
+        try:
+            grid_buffer = await compose_card_grid([card for _, card in valid_cards])
+        except Exception as e:
+            self.logger.warning("Grid composition failed", error=str(e))
+            await message.channel.send(embed=embed)
+            return
+
         embed.set_image(url="attachment://cards.png")
 
         file = discord.File(grid_buffer, filename="cards.png")
@@ -644,17 +618,6 @@ class MTGCardBot(discord.Client):
                 filter_parts.append(word)
 
         return " ".join(filter_parts)
-
-    def _extract_bracket_content(self, message_content: str) -> str | None:
-        """Extract card name from bracket syntax [[card name]]."""
-        # Look for [[content]] pattern
-        bracket_pattern = r"\[\[([^\]]+)\]\]"
-        match = re.search(bracket_pattern, message_content)
-
-        if match:
-            return match.group(1).strip()
-
-        return None
 
     async def _send_card_message(
         self,
@@ -845,7 +808,8 @@ class MTGCardBot(discord.Client):
         embed.add_field(
             name="Multiple Cards",
             value=(
-                "Semicolons resolve several cards in a grid.\n"
+                "Use brackets or semicolon-separated lookups.\n"
+                "`[[Lightning Bolt]] [[Counterspell]]`\n"
                 f"`{prefix}bolt; counterspell; doom blade`\n"
                 f"`{prefix}sol ring e:lea; mox ruby e:lea`"
             ),
