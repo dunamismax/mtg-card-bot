@@ -13,7 +13,7 @@ python="$base/python/$python_version/bin/python3.13"
 unit=mtg-card-bot.service
 dropin="/etc/systemd/system/$unit.d/60-release.conf"
 service_user=mtg-card-bot
-lock=/run/astro-deploy/lock
+lock=/run/web-deploy/lock
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 is_revision() { [[ $1 =~ ^[0-9a-f]{40}$ ]]; }
