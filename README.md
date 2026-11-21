@@ -66,7 +66,8 @@ uv run python manage_bot.py start
 
 ## Configuration
 
-Set environment variables in `.env` or in the process environment:
+Set environment variables in `.env` (local development) or in the process
+environment (production; see [Deployment Notes](#deployment-notes)):
 
 | Variable | Description | Default |
 | --- | --- | --- |
@@ -163,7 +164,9 @@ advisory scanning and weekly verification. uv lock and GitHub Action updates
 are reviewed and made directly on `main`; no CI job deploys them. Runtime dependencies and the
 supported Python version remain unchanged. Test in a clean source export with a
 fresh venv: historical ignored packages at the checkout root can shadow src and
-invalidate coverage. The production service loads credentials through systemd
-and its effective dedicated-user drop-in; inspect `systemctl show` and drop-ins
-before making service changes. Host resource and encrypted-backup procedures are
+invalidate coverage. The production service runs as a dedicated user under
+[deploy/mtg-card-bot.service](deploy/mtg-card-bot.service) and loads its token
+through systemd from a root-only file outside this repository
+(`/etc/web-apps/mtg_card_bot/app.env`); inspect `systemctl show` and the
+drop-ins before making service changes. Host resource and encrypted-backup procedures are
 owned by ubuntu-vm-backup. Never use the live token in CI or synthetic tests.

@@ -111,26 +111,19 @@ CONF
 
 check_selection() {
     local revision=$1
-    if [[ $revision == legacy ]]; then
-        [[ -x $repo/.venv/bin/python ]] || die "Legacy interpreter missing."
-    else
-        is_revision "$revision" || die "Invalid release: $revision"
-        [[ $(cat "$base/releases/$revision/.revision") == "$revision" ]] ||
-            die "Prepare $revision before activation."
-        check_import "$base/releases/$revision" || die "Cannot import release $revision."
-    fi
+    is_revision "$revision" || die "Invalid release: $revision"
+    [[ $(cat "$base/releases/$revision/.revision") == "$revision" ]] ||
+        die "Prepare $revision before activation."
+    check_import "$base/releases/$revision" || die "Cannot import release $revision."
 }
 
 select_release() {
     local revision=$1
-    if [[ $revision == legacy ]]; then
-        rm -f -- "$dropin" "$base/current" || return
-    else
-        ln -sfn "releases/$revision" "$transaction/current" || return
-        mv -Tf -- "$transaction/current" "$base/current" || return
-        release_dropin "$revision" >"$transaction/60-release.conf" || return
-        install -m 0644 "$transaction/60-release.conf" "$dropin" || return
-    fi
+    ln -sfn "releases/$revision" "$transaction/current" || return
+    mv -Tf -- "$transaction/current" "$base/current" || return
+    release_dropin "$revision" >"$transaction/60-release.conf" || return
+    install -d -m 0755 "$(dirname "$dropin")" || return
+    install -m 0644 "$transaction/60-release.conf" "$dropin" || return
     systemd-analyze verify "/etc/systemd/system/$unit" || return
     systemctl daemon-reload && check_service_identity
 }
@@ -152,9 +145,6 @@ stop_bot() {
 
 wait_ready() {
     local invocation pid state second actual expected_python="$base/current/.venv/bin/python"
-    if [[ $1 == legacy ]]; then
-        expected_python="$repo/.venv/bin/python"
-    fi
     invocation=$(systemctl show "$unit" -p InvocationID --value) || return
     pid=$(systemctl show "$unit" -p MainPID --value) || return
     [[ -n $invocation && $pid != 0 ]] || return 1
@@ -176,24 +166,21 @@ wait_ready() {
     return 1
 }
 
-restore_on_failure() {
+# Fix forward: a failed activation leaves the new release selected and says
+# where it stopped. Nothing is switched back to the earlier release.
+report_failure() {
     local status=$?
     trap - EXIT
-    if ((status != 0)); then
-        printf 'Activation failed. Restoring %s.\n' "$old" >&2
-        if stop_bot && select_release "$old" &&
-            { [[ $was_running == no ]] || { systemctl start "$unit" && wait_ready "$old"; }; }; then
-            printf 'Restored %s\n' "$old" >&2
-        else
-            printf 'Automatic recovery failed. Check %s before starting the bot.\n' "$unit" >&2
-        fi
-    fi
     rm -rf -- "$transaction"
+    if ((status != 0)); then
+        printf 'Activation of %s failed and it stays selected (previous: %s).\n' "$revision" "$old" >&2
+        printf 'Read journalctl -u %s, fix the cause in a new commit, prepare and activate it.\n' "$unit" >&2
+    fi
     exit "$status"
 }
 
 activate() {
-    local revision=$1 expected=$2 link transaction old=legacy was_running=no
+    local revision=$1 expected=$2 link transaction old=none
     if [[ -L $base/current ]]; then
         link=$(readlink "$base/current")
         old=${link#releases/}
@@ -204,21 +191,17 @@ activate() {
         die "Release link and drop-in do not agree."
     fi
     [[ $old == "$expected" ]] || die "Expected $expected, found $old."
-    check_selection "$old"
     check_selection "$revision"
     check_service_identity || die "Unexpected systemd service identity or KillMode."
 
-    if systemctl is-active --quiet "$unit"; then
-        was_running=yes
-        if [[ $old == "$revision" ]]; then
-            wait_ready "$revision"
-            return
-        fi
+    if [[ $old == "$revision" ]] && systemctl is-active --quiet "$unit"; then
+        wait_ready "$revision"
+        return
     fi
     transaction=$(mktemp -d "$base/.activate.XXXXXXXX")
     # Bash's EXIT trap outlives the function scope. Run the transaction in a subshell.
     (
-        trap restore_on_failure EXIT
+        trap report_failure EXIT
         trap 'exit 1' HUP INT TERM
         stop_bot || die "Previous process did not stop."
         select_release "$revision"
@@ -235,7 +218,7 @@ case "${1:-}" in
         prepare "$2"
         ;;
     activate)
-        [[ $# == 3 ]] || die "Usage: $0 activate FULL_SHA|legacy EXPECTED_SHA|legacy"
+        [[ $# == 3 ]] || die "Usage: $0 activate FULL_SHA EXPECTED_SHA|none"
         if [[ $(readlink "/proc/$$/fd/9" 2>/dev/null || true) != "$lock" ]]; then
             exec /usr/local/sbin/with-deploy-lock "$(realpath -- "$0")" "$@"
         fi

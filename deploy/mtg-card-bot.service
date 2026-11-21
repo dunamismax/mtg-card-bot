@@ -1,0 +1,50 @@
+# /etc/systemd/system/mtg-card-bot.service, installed from deploy/ in the
+# mtg-card-bot repository (deploy/README.md).
+#
+# The bot runs as its own account from the root-owned release that
+# /opt/mtg-card-bot/current points at, and reads nothing from a home directory
+# or a Git checkout. Its Discord token is in the root-only
+# /etc/web-apps/mtg_card_bot/app.env, which systemd reads before it drops privileges.
+# deploy/release writes the 60-release.conf drop-in that records the active
+# commit; it repeats the ExecStart and PYTHONPATH below.
+[Unit]
+Description=MTG Card Discord Bot
+Documentation=https://github.com/dunamismax/mtg-card-bot
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=mtg-card-bot
+Group=mtg-card-bot
+WorkingDirectory=/var/lib/mtg-card-bot
+StateDirectory=mtg-card-bot
+Environment=HOME=/var/lib/mtg-card-bot PYTHONUNBUFFERED=1 PYTHONPATH=/opt/mtg-card-bot/current/src
+EnvironmentFile=/etc/web-apps/mtg_card_bot/app.env
+ExecStart=/opt/mtg-card-bot/current/.venv/bin/python -BP -m mtg_card_bot
+Restart=on-failure
+RestartSec=5s
+SyslogIdentifier=mtg-card-bot
+# The sandbox of the host's web units (dunamismax.service is the reference).
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+# Stricter than the web units; the bot ran with these before.
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
