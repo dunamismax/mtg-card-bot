@@ -182,7 +182,7 @@ When a task touches a checked-out codebase, read that repo's local docs after `S
 
 For repo-local `BUILD.md` files, treat them as greenfield build manuals, not permanent repo furniture. Once a repo is out of the initial build phase, Stephen's preference is to remove `BUILD.md`, fold any still-useful current-state guidance into stable docs such as `README.md`, `CONTRIBUTING.md`, `docs/operations.md`, or `docs/development.md`, and keep the repo on current truth instead of a lingering phase tracker. Only keep or create a `BUILD.md` when the repo is genuinely in an active greenfield build phase or Stephen explicitly asks for one.
 
-Stephen's current stack: Python and Go remain the primary backend lanes. All web work is Astro + strict TypeScript + Node + PostgreSQL, served by Caddy on Ubuntu.
+Stephen's current stack: Python and Go remain the primary backend lanes. All web work is SvelteKit + strict TypeScript + Node + PostgreSQL, served by Caddy on Ubuntu.
 
 The canonical, project-by-project stack reference is `~/github/dunamismax/TECH_STACK.md`. Read it before working on any web repo.
 
@@ -192,17 +192,17 @@ For new work or rewrites, default to:
 
 - **Python** for backends, APIs, automation, scripting, data work, and application logic where Python is the best fit
 - **Go** for networking, systems daemons, and performance-critical or concurrency-heavy backends where Go earns it
-- **Astro + strict TypeScript + PostgreSQL + Caddy** for websites and web applications
+- **SvelteKit + strict TypeScript + PostgreSQL + Caddy** for websites and web applications
 
 Web defaults:
 
-- Astro 7 for pages, static generation and server rendering (`@astrojs/node` standalone)
+- SvelteKit 3 with Svelte 5 on Node (`@sveltejs/adapter-node`), and Tailwind CSS 4 for styles
 - Strict TypeScript 6 (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`)
 - Node 24 and npm: exact dependency pins, committed `package-lock.json`, `npm ci`
 - PostgreSQL 18 through `pg`, with Drizzle ORM and reviewed `drizzle-kit` migrations checked into the repo
 - Separate database roles for readers, publishers, collectors and migrations
-- Semantic HTML and hand-written CSS; no browser framework, and little or no client JavaScript
-- `astro check`, `tsc --noEmit`, project tests and a production build as the quality gate
+- Semantic, server-rendered HTML with little or no client JavaScript
+- `svelte-check`, `tsc --noEmit`, project tests and a production build as the quality gate
 - Caddy for TLS and reverse proxy, systemd for services and timers, and immutable commit-based releases switched by an atomic `current` symlink
 
 Python defaults:

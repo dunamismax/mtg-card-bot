@@ -148,8 +148,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and repo con
 
 ## Deployment Notes
 
-The [Ubuntu VM runbook](deploy/README.md) covers pinned releases, verification
-and rollback for `mtg-card-bot.service`. For a container build, install `uv`,
+The [Ubuntu VM runbook](deploy/README.md) covers pinned releases and
+verification for `mtg-card-bot.service`. For a container build, install `uv`,
 copy the repo, run `uv sync --locked`, and start the package entrypoint.
 
 ## License

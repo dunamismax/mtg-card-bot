@@ -17,8 +17,8 @@ and its module search path at the `current` symlink.
 
 ## Prepare and activate
 
-Run these commands on the VM. Fetch as `sawyer` without changing the working tree
-while the pre-release checkout is needed for rollback. Use the full SHA of the
+Run these commands on the VM. Fetch as `sawyer` without changing the working tree.
+Use the full SHA of the
 reviewed commit. Install the helper from the reviewed Git revision on the first
 deployment or when the helper changes.
 
@@ -63,16 +63,10 @@ separately through the installed client with a normal card-name request.
 Use a live Discord lookup only with an approved test identity in a documented
 private bot-test channel.
 
-## Rollback
+## If a release fails
 
-```sh
-sudo mtg-card-bot-release activate PREVIOUS_SHA CURRENT_SHA
-```
-
-For the initial cutover, use `legacy` in place of `PREVIOUS_SHA` to remove the
-release drop-in and start the retained checkout and original venv. Keep that
-checkout and venv at their pre-cutover versions while this fallback is needed.
-The same gateway readiness check applies after rollback.
+There is no rollback procedure (owner decision, 2026-11-21). If an activated
+release misbehaves, fix the cause, prepare the fixed commit and activate it.
 
 ## Restore on a rebuilt VM
 
